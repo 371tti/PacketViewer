@@ -6,12 +6,12 @@
 <title>Packet Diagram Generator</title>
 <style>
   * { box-sizing:border-box; }
-  html,body { margin:0; padding:0; background:#fff; color:#1f2937; font-family:system-ui,-apple-system,"Noto Sans JP","Hiragino Kaku Gothic ProN",Meiryo,sans-serif; }
+  html,body { margin:0; padding:0; background:#fff; color:#1f2937; font-family:"UDEV Gothic NF",sans-serif; }
   body { min-height:100vh; }
   .tool { display:grid; grid-template-columns:340px minmax(0,1fr); min-height:100vh; }
   .controls { border-right:1px solid #cbd5e1; padding:14px; }
   textarea,select,input[type="number"],button { font:inherit; color:inherit; background:#fff; border:1px solid #94a3b8; border-radius:0; }
-  textarea { width:100%; height:220px; resize:vertical; padding:8px; font-family:"DejaVu Sans Mono",ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; line-height:1.55; word-break:break-all; }
+  textarea { width:100%; height:220px; resize:vertical; padding:8px; font-family:"UDEV Gothic NF",sans-serif; font-size:12px; line-height:1.55; word-break:break-all; }
   select,input[type="number"] { width:100%; height:34px; padding:4px 6px; }
   label.field { display:block; margin:0 0 10px; font-size:12px; }
   label.field > span { display:block; margin:0 0 3px; }
@@ -64,10 +64,10 @@
 'use strict';
 const EXAMPLE='bc241186b507bc2411a2acbc080045000054e6ab400040013fb30a0400200a0400230800fd79fe1800016cfebe6a0000000005300d0000000000101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f3031323334353637';
 const $=id=>document.getElementById(id);
-const C={dst:'#1F5CBD',src:'#0A8067',etype:'#A46A09',ip:'#6C46B3',icmp:'#BA4562',app:'#946418',data:'#0A7E99',plain:'#42526E',sep:'#94A0B2'};
-const BG={ether:['#F7F8FA','#A2ADBC'],ip:['#F2EEFB','#A78ED4'],icmp:['#FDF0F3','#DF98AA'],app:['#FEF4DC','#D6B06A'],data:['#E8F7FA','#6DB6C5']};
-const family='Noto Sans CJK JP, Noto Sans JP, Hiragino Kaku Gothic ProN, Meiryo, sans-serif';
-const mono='DejaVu Sans Mono, SFMono-Regular, Consolas, monospace';
+const C={dst:'#2066CE',src:'#0C987C',etype:'#BC7C00',ip:'#7444B3',icmp:'#C0425F',app:'#B08615',data:'#0795B5',plain:'#5C6B82',sep:'#64748B',ipSource:'#0072CE',ipDestination:'#D92D20',hop:'#B54708',protocol:'#6941C6',flags:'#C11574',type:'#D97706',code:'#0E7490',length:'#087E8B',checksum:'#087A4A'};
+const BG={ether:['#F8FAFC','#9AA7B6'],ip:['#F8F5FF','#9B86C8'],icmp:['#FFF5F6','#C97F91'],app:['#FFFAF0','#C49B55'],data:['#F0FBFD','#6AAEBA']};
+const family='"UDEV Gothic NF", sans-serif';
+const mono=family;
 let sourceSVG='';
 const canvas=document.createElement('canvas'),measure=canvas.getContext('2d');
 const width=(s,size=18,kind='sans')=>{measure.font=`700 ${size}px ${kind==='mono'?mono:family}`;return measure.measureText(s).width;};
@@ -414,26 +414,34 @@ function classify(a,opts={}){
 // three sections while keeping text-flow and byte-grid layout independent.
 
 const FIELD_PALETTE=[
-  '#245BC0','#0B846A','#A56708','#7A4DB3','#BE4662','#087E9A',
-  '#B6542D','#5168A8','#8B5D2D','#617C3C','#9D408C','#3D7C75',
-  '#C15B7B','#4F70B5','#8E6A16','#6F55A5'
+  '#2066CE','#0C987C','#BC7C00','#7444B3','#C0425F','#0795B5',
+  '#C4512F','#5872B5','#A4662E','#729441','#B352A1','#44938A',
+  '#B85A7A','#5D7BBA','#B08615','#7661B0'
 ];
-const PROTOCOL_TEXT={ether:'#42526E',ip:'#6D4AB4',icmp:'#B64663',data:'#0A7E99',app:'#7651A9',plain:'#42526E'};
+const PROTOCOL_TEXT={ether:'#5C6B82',ip:'#7444B3',icmp:'#C0425F',data:'#0795B5',app:'#B08615',plain:'#5C6B82'};
+const IMPORTANT_FIELD_COLORS={
+  '送信元IP':C.ipSource,'宛先IP':C.ipDestination,
+  TTL:C.hop,'Hop Limit':C.hop,
+  Protocol:C.protocol,'Next Header':C.protocol,
+  'Flags/Offset':C.flags,'Offset/Flags':C.flags,Type:C.type,Code:C.code,
+  'Total Length':C.length,'Payload Length':C.length,
+  'Header Checksum':C.checksum,Checksum:C.checksum
+};
 
 function buildFields(a,p){
-  const out=[],n=a.length,groupCounts=new Map();
+  const out=[],n=a.length;
   const keyForGroup=(l)=>l.id==='ether'?'ether':l.id==='data'?'data':l.id==='app'?'app':l.id==='icmp'?'icmp':l.id==='ip'?'ip':l.id;
   const colorFor=(l,name)=>{
-    if(l.id==='data')return '#087E9A';
+    if(IMPORTANT_FIELD_COLORS[name])return IMPORTANT_FIELD_COLORS[name];
+    if(l.id==='data')return C.data;
     if(l.id==='ether'){
-      if(/宛先MAC/.test(name))return '#245BC0';
-      if(/送信元MAC/.test(name))return '#0B846A';
-      if(/EtherType|VLAN/.test(name))return '#A56708';
+      if(/宛先MAC/.test(name))return C.dst;
+      if(/送信元MAC/.test(name))return C.src;
+      if(/EtherType|VLAN/.test(name))return C.etype;
     }
-    const g=l.id+':'+l.name;
-    const idx=groupCounts.get(g)||0;groupCounts.set(g,idx+1);
-    const base=l.id==='ip'?3:l.id==='icmp'?4:l.id==='app'?8:0;
-    return FIELD_PALETTE[(base+idx)%FIELD_PALETTE.length];
+    let hash=2166136261;
+    for(const char of name){hash^=char.codePointAt(0);hash=Math.imul(hash,16777619);}
+    return FIELD_PALETTE[(hash>>>0)%FIELD_PALETTE.length];
   };
   const add=(l,start,end,name)=>{
     start=Math.max(0,Math.min(n,start));end=Math.max(start,Math.min(n,end));
@@ -511,34 +519,23 @@ function buildFields(a,p){
     if(f.end<=cursor)continue;
     if(f.start>cursor){
       const l=deepestLayerAt(p,cursor)||{id:'data',name:'Data',color:'data',bg:'data',start:cursor,end:f.start};
-      result.push({start:cursor,end:f.start,name:'Data',groupId:l.id,groupName:l.name,groupKey:l.id,color:'#087E9A',layer:l});
+      result.push({start:cursor,end:f.start,name:'Data',groupId:l.id,groupName:l.name,groupKey:l.id,color:C.data,layer:l});
     }
     result.push({...f,start:Math.max(cursor,f.start)});cursor=Math.max(cursor,f.end);
   }
-  if(cursor<n){const l=deepestLayerAt(p,cursor)||{id:'data',name:'Data',color:'data',bg:'data',start:cursor,end:n};result.push({start:cursor,end:n,name:'Data',groupId:l.id,groupName:l.name,groupKey:l.id,color:'#087E9A',layer:l});}
+  if(cursor<n){const l=deepestLayerAt(p,cursor)||{id:'data',name:'Data',color:'data',bg:'data',start:cursor,end:n};result.push({start:cursor,end:n,name:'Data',groupId:l.id,groupName:l.name,groupKey:l.id,color:C.data,layer:l});}
   return result;
 }
 function deepestLayerAt(p,pos){
   const c=p.layers.filter(l=>l.start<=pos&&pos<l.end).sort((a,b)=>(b.start-a.start)||(a.end-b.end));
   return c[0]||null;
 }
-function roundedPath(points,radius=6){
+function polygonPath(points){
   const pts=[];
   for(const p of points){const q=pts.at(-1);if(!q||Math.hypot(q[0]-p[0],q[1]-p[1])>.01)pts.push(p);}
   if(pts.length>1&&Math.hypot(pts[0][0]-pts.at(-1)[0],pts[0][1]-pts.at(-1)[1])<.01)pts.pop();
   if(pts.length<4)return '';
-  let d='';
-  for(let i=0;i<pts.length;i++){
-    const a=pts[(i+pts.length-1)%pts.length],p=pts[i],b=pts[(i+1)%pts.length];
-    const u=Math.hypot(a[0]-p[0],a[1]-p[1]),v=Math.hypot(b[0]-p[0],b[1]-p[1]);
-    const cross=(p[0]-a[0])*(b[1]-p[1])-(p[1]-a[1])*(b[0]-p[0]);
-    const r=(u<.01||v<.01||Math.abs(cross)<.01)?0:Math.min(radius,u*.45,v*.45);
-    const q=r?[p[0]+(a[0]-p[0])*r/u,p[1]+(a[1]-p[1])*r/u]:p;
-    const w=r?[p[0]+(b[0]-p[0])*r/v,p[1]+(b[1]-p[1])*r/v]:p;
-    d+=(i?' L ':'M ')+`${fmt(q[0])} ${fmt(q[1])}`;
-    d+=r?` Q ${fmt(p[0])} ${fmt(p[1])} ${fmt(w[0])} ${fmt(w[1])}`:` L ${fmt(w[0])} ${fmt(w[1])}`;
-  }
-  return d+' Z';
+  return `M ${pts.map(p=>`${fmt(p[0])} ${fmt(p[1])}`).join(' L ')} Z`;
 }
 function layerDepths(p){
   const m=new Map();
@@ -587,7 +584,7 @@ function continuousRibbon(intervals,rowTops,rowHeights,depth,maxDepth){
       pts.push([cur.left,y],[prev.left,y]);
     }
   }
-  return roundedPath(pts,Math.max(3.5,7-depth*.5));
+  return polygonPath(pts);
 }
 function protocolNameColor(l){return PROTOCOL_TEXT[l.id]||PROTOCOL_TEXT.plain;}
 function protocolNumberName(n,ipv6=false){
@@ -828,7 +825,7 @@ function ribbonWithGutters(intervals,boxTops,boxHeights,depth,maxDepth){
       pts.push([cur.left,mid],[prev.left,mid],[prev.left,prev.bottom]);
     }
   }
-  return roundedPath(pts,Math.max(3.5,7-depth*.55));
+  return polygonPath(pts);
 }
 
 function contentIntervalsForLayerV9(lines,layer,origin){
@@ -881,20 +878,20 @@ function renderSVGv9(a,p,opts={}){
   const H=Math.ceil(decBottom+16),W=Math.ceil(targetW);
 
   const out=[],put=s=>out.push(s);
-  const fam='system-ui,-apple-system,"Noto Sans JP","Hiragino Kaku Gothic ProN",Meiryo,sans-serif';
-  const mon='"DejaVu Sans Mono",ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace';
+  const fam='UDEV Gothic NF, sans-serif';
+  const mon=fam;
   const text=(x,yy,s,color,size=16,kind='sans',weight=700,anchor='start')=>
     put(`<text x="${fmt(x)}" y="${fmt(yy)}" fill="${color}" font-family="${kind==='mono'?mon:fam}" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}">${escapeXML(s)}</text>`);
   const drawRibbon=(l,intervals,tops,heights,zone)=>{
     const d=ribbonWithGutters(intervals,tops,heights,depths.get(l)||0,maxDepth);if(!d)return;
     const c=BG[l.bg]||BG.ether;
-    put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="round"/>`);
+    put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="miter"/>`);
   };
 
   put(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
 
   // 1) Segment names: content-flow, not byte-grid shaped.
-  text(22,24,'セグメント名','#64748B',15);
+  text(geom.origin-11,24,'セグメント名','#64748B',18);
   for(const l of p.layers){
     const ints=contentIntervalsForLayerV9(names,l,geom.origin);
     if(ints.length)drawRibbon(l,ints,nameTops,nameHeights,'name');
@@ -903,7 +900,7 @@ function renderSVGv9(a,p,opts={}){
 
   // 2) HEX: exact byte positions. Each row has a 16px+ gutter, so a wrapped
   // outline can never cross the glyph box.
-  text(22,nameBottom+39,'HEX','#64748B',15);
+  text(geom.origin-11,nameBottom+39,'HEX','#64748B',18);
   for(const l of p.layers)drawRibbon(l,intervalsForLayer(l,geom),hexTops,hexHeights,'hex');
   const byteField=new Array(a.length);
   for(const f of fields)for(let i=f.start;i<f.end;i++)byteField[i]=f;
@@ -915,7 +912,7 @@ function renderSVGv9(a,p,opts={}){
   }
 
   // 3) Decoded values: exactly the same content-flow geometry as segment names.
-  text(22,hexBottom+42,'デコード結果','#64748B',15);
+  text(geom.origin-11,hexBottom+42,'デコード結果','#64748B',18);
   for(const l of p.layers){
     const ints=contentIntervalsForLayerV9(decode,l,geom.origin);
     if(ints.length)drawRibbon(l,ints,decTops,decHeights,'decode');
@@ -933,7 +930,7 @@ function renderSVGv9(a,p,opts={}){
 //   1. HEX owns a fixed byte grid. Text labels can never change cell positions.
 //   2. Segment names and decoded values are one continuous content flow. A
 //      protocol boundary never forces a line break.
-//   3. The outermost layer is a simple rounded rectangle. Nested layers use
+//   3. The outermost layer is a simple square-corner rectangle. Nested layers use
 //      gutter-only connectors, so no horizontal outline can cross glyphs.
 //   4. Every flow token gets an explicit x and textLength. Font fallback cannot
 //      accumulate into layout drift.
@@ -1058,7 +1055,7 @@ function safeRibbonPath(intervals,tops,heights,depth,maxDepth){
       pts.push([cur.left,mid],[prev.left,mid],[prev.left,prev.bottom]);
     }
   }
-  return roundedPath(pts,Math.max(3.8,8-depth*.65));
+  return polygonPath(pts);
 }
 
 function renderFlowToken(put,item,y,size,fam,mon){
@@ -1069,7 +1066,7 @@ function renderFlowToken(put,item,y,size,fam,mon){
   if(item.proto){
     const h=size+10;
     const top=y-size-4;
-    put(`<rect x="${fmt(item.x1)}" y="${fmt(top)}" width="${fmt(item.width)}" height="${fmt(h)}" rx="6" fill="${item.badgeBg||'#F7F8FA'}" stroke="${item.badgeStroke||'#A2ADBC'}" stroke-width="1.5"/>`);
+    put(`<rect x="${fmt(item.x1)}" y="${fmt(top)}" width="${fmt(item.width)}" height="${fmt(h)}" fill="${item.badgeBg||'#F7F8FA'}" stroke="${item.badgeStroke||'#A2ADBC'}" stroke-width="1.5"/>`);
   }
   put(`<text x="${fmt(item.x1+pad)}" y="${fmt(y)}" fill="${item.color}" font-family="${familyName}" font-size="${size}" font-weight="${weight}" textLength="${fmt(Math.max(1,textW))}" lengthAdjust="spacingAndGlyphs">${escapeXML(item.text)}</text>`);
 }
@@ -1105,8 +1102,8 @@ function renderSVGv10(a,p,opts={}){
   const W=Math.ceil(targetW),H=Math.ceil(decBottom+18);
 
   const out=[],put=s=>out.push(s);
-  const fam='system-ui,-apple-system,Noto Sans JP,Hiragino Kaku Gothic ProN,Meiryo,sans-serif';
-  const mon='DejaVu Sans Mono,ui-monospace,SFMono-Regular,Consolas,Liberation Mono,monospace';
+  const fam='UDEV Gothic NF, sans-serif';
+  const mon=fam;
   const text=(x,yy,s,color,size=16,kind='sans',weight=700,anchor='start')=>put(`<text x="${fmt(x)}" y="${fmt(yy)}" fill="${color}" font-family="${kind==='mono'?mon:fam}" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}">${escapeXML(s)}</text>`);
 
   function drawLayerSet(zone,linesOrRows,tops,heights,intervalFn){
@@ -1121,23 +1118,23 @@ function renderSVGv10(a,p,opts={}){
           ? Math.max(...rows.map(r=>geom.rowRight(r)))
           : Math.max(...linesOrRows.map(line=>geom.origin+line.width));
         const top=tops[0]-7,bottom=tops.at(-1)+heights.at(-1)+7;
-        put(`<rect data-zone="${zone}" data-layer="${escapeXML(l.id)}" x="${fmt(geom.origin-11)}" y="${fmt(top)}" width="${fmt(right-geom.origin+22)}" height="${fmt(bottom-top)}" rx="9" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8"/>`);
+        put(`<rect data-zone="${zone}" data-layer="${escapeXML(l.id)}" x="${fmt(geom.origin-11)}" y="${fmt(top)}" width="${fmt(right-geom.origin+22)}" height="${fmt(bottom-top)}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8"/>`);
         continue;
       }
       const d=safeRibbonPath(ints,tops,heights,depth,maxDepth);
-      if(d)put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="round"/>`);
+      if(d)put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="miter"/>`);
     }
   }
 
   put(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
 
   // 1) Segment names: one continuous flow across protocol boundaries.
-  text(22,25,'セグメント名','#64748B',15);
+  text(geom.origin-11,25,'セグメント名','#64748B',18);
   drawLayerSet('name',names,nameTops,names.map(()=>flowBoxH),l=>flowIntervalsForLayer(names,l));
   for(let r=0;r<names.length;r++)for(const item of names[r].items)renderFlowToken(put,item,nameTops[r]+24,16,fam,mon);
 
   // 2) HEX: byte positions depend only on byte index and fixed cell pitch.
-  text(22,nameBottom+40,'HEX','#64748B',15);
+  text(geom.origin-11,nameBottom+40,'HEX','#64748B',18);
   drawLayerSet('hex',rows,hexTops,rows.map(()=>hexBoxH),l=>intervalsForLayer(l,geom));
   const byteField=new Array(a.length);
   for(const f of fields)for(let i=f.start;i<f.end;i++)byteField[i]=f;
@@ -1150,7 +1147,7 @@ function renderSVGv10(a,p,opts={}){
   }
 
   // 3) Decoded values: same flow engine and baseline rules as segment names.
-  text(22,hexBottom+43,'デコード結果','#64748B',15);
+  text(geom.origin-11,hexBottom+43,'デコード結果','#64748B',18);
   drawLayerSet('decode',decode,decTops,decode.map(()=>flowBoxH),l=>flowIntervalsForLayer(decode,l));
   for(let r=0;r<decode.length;r++)for(const item of decode[r].items)renderFlowToken(put,item,decTops[r]+25,17,fam,mon);
 
@@ -1186,7 +1183,7 @@ function firstHexHit(layer,geom){
   return null;
 }
 
-function startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,radius=8,leadPad=16){
+function startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,leadPad=16){
   if(!hit)return '';
   const row=hit.row;
   const top=tops[row]-6;
@@ -1194,7 +1191,7 @@ function startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,radius=8,
   // If the layer starts at the visual line head after padding, use the same
   // breathing room as a normal rectangle.
   if(startX<=zoneLeft+1){
-    return roundedPath([[zoneLeft,top],[zoneRight,top],[zoneRight,zoneBottom],[zoneLeft,zoneBottom]],radius);
+    return polygonPath([[zoneLeft,top],[zoneRight,top],[zoneRight,zoneBottom],[zoneLeft,zoneBottom]]);
   }
   // A layer occupies only the tail of its first row. After the following gutter
   // it spans the whole section width. This is the only step in the shape.
@@ -1202,17 +1199,17 @@ function startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,radius=8,
     const rowBottom=tops[row]+heights[row]+6;
     const nextTop=tops[row+1]-6;
     const seam=(rowBottom+nextTop)/2;
-    return roundedPath([
+    return polygonPath([
       [startX,top],
       [zoneRight,top],
       [zoneRight,zoneBottom],
       [zoneLeft,zoneBottom],
       [zoneLeft,seam],
       [startX,seam]
-    ],radius);
+    ]);
   }
   // Started on the final row: no wrap exists, so a simple tail rectangle is enough.
-  return roundedPath([[startX,top],[zoneRight,top],[zoneRight,zoneBottom],[startX,zoneBottom]],radius);
+  return polygonPath([[startX,top],[zoneRight,top],[zoneRight,zoneBottom],[startX,zoneBottom]]);
 }
 
 function renderSVGv17(a,p,opts={}){
@@ -1256,8 +1253,8 @@ function renderSVGv17(a,p,opts={}){
 
   const W=Math.ceil(targetW),H=Math.ceil(Math.max(80,y));
   const out=[],put=s=>out.push(s);
-  const fam='system-ui,-apple-system,Noto Sans JP,Hiragino Kaku Gothic ProN,Meiryo,sans-serif';
-  const mon='DejaVu Sans Mono,ui-monospace,SFMono-Regular,Consolas,Liberation Mono,monospace';
+  const fam='UDEV Gothic NF, sans-serif';
+  const mon=fam;
   const text=(x,yy,s,color,size=16,kind='sans',weight=700,anchor='start')=>put(`<text x="${fmt(x)}" y="${fmt(yy)}" fill="${color}" font-family="${kind==='mono'?mon:fam}" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}">${escapeXML(s)}</text>`);
 
   function drawSimpleLayers(zone,linesOrRows,tops,heights,hitFn){
@@ -1274,39 +1271,57 @@ function renderSVGv17(a,p,opts={}){
       let d;
       if(depth===0&&l.start===0){
         const top=tops[0]-7;
-        d=roundedPath([[zoneLeft,top],[zoneRight,top],[zoneRight,zoneBottom],[zoneLeft,zoneBottom]],9);
+        d=polygonPath([[zoneLeft,top],[zoneRight,top],[zoneRight,zoneBottom],[zoneLeft,zoneBottom]]);
       }else{
         // Keep HEX on the exact byte-cell boundary. Flow sections retain the
         // left breathing room introduced in v12/v13.
-        d=startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,Math.max(5,8-depth*.5),zone==='hex'?0:16);
+        d=startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,zone==='hex'?0:16);
       }
-      if(d)put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="round"/>`);
+      if(d)put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="miter"/>`);
     }
   }
 
   put(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
 
   if(showNames){
-    text(22,nameTops[0]-17,'セグメント名','#64748B',15);
+    text(geom.origin-11,nameTops[0]-17,'セグメント名','#64748B',18);
     drawSimpleLayers('name',names,nameTops,names.map(()=>flowBoxH),l=>firstFlowHit(names,l));
     for(let r=0;r<names.length;r++)for(const item of names[r].items)renderFlowToken(put,item,nameTops[r]+24,16,fam,mon);
   }
 
   if(showHex){
-    text(22,hexTops[0]-17,'HEX','#64748B',15);
-    drawSimpleLayers('hex',rows,hexTops,rows.map(()=>hexBoxH),l=>firstHexDisplayHit(l,geom,hexCells));
+    text(geom.origin-11,hexTops[0]-17,'HEX','#64748B',18);
+    const zoneLeft=geom.origin-11;
+    const zoneRight=Math.max(...rows.map(r=>geom.rowRight(r)))+11;
+    const zoneBottom=hexTops.at(-1)+hexBoxH+7;
+    const hexRegions=[];
+    for(const l of layers){
+      const hit=firstHexDisplayHit(l,geom,hexCells);if(!hit)continue;
+      const depth=depths.get(l)||0;
+      const colors=BG[l.bg]||BG.ether;
+      const d=depth===0&&l.start===0
+        ? polygonPath([[zoneLeft,hexTops[0]-7],[zoneRight,hexTops[0]-7],[zoneRight,zoneBottom],[zoneLeft,zoneBottom]])
+        : startNotchPath(hit,hexTops,rows.map(()=>hexBoxH),zoneLeft,zoneRight,zoneBottom,0);
+      if(d)hexRegions.push({l,d,colors});
+    }
+    for(const region of hexRegions){
+      put(`<path data-zone="hex" data-layer="${escapeXML(region.l.id)}" d="${region.d}" fill="${region.colors[0]}" stroke="none"/>`);
+    }
+    for(const region of hexRegions){
+      put(`<path data-zone="hex" data-layer="${escapeXML(region.l.id)}" d="${region.d}" fill="none" stroke="${region.colors[1]}" stroke-width="1.4" stroke-linejoin="miter"/>`);
+    }
     for(let r=0;r<rows.length;r++){
       const row=rows[r];
       for(let k=row.start;k<row.end;k++){
         const c=hexCells[k];
         const label=c.kind==='omit'?'…':hex2(a[c.srcStart]);
-        text(geom.centerFor(row,k),hexTops[r]+25,label,c.color||'#42526E',17,'mono',700,'middle');
+        text(geom.centerFor(row,k),hexTops[r]+25,label,c.color||C.plain,17,'mono',700,'middle');
       }
     }
   }
 
   if(showDecode){
-    text(22,decTops[0]-17,'デコード結果','#64748B',15);
+    text(geom.origin-11,decTops[0]-17,'デコード結果','#64748B',18);
     drawSimpleLayers('decode',decode,decTops,decode.map(()=>flowBoxH),l=>firstFlowHit(decode,l));
     for(let r=0;r<decode.length;r++)for(const item of decode[r].items)renderFlowToken(put,item,decTops[r]+25,17,fam,mon);
   }
