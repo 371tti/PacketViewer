@@ -1,0 +1,1428 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Packet Diagram Generator</title>
+<style>
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; background:#fff; color:#1f2937; font-family:system-ui,-apple-system,"Noto Sans JP","Hiragino Kaku Gothic ProN",Meiryo,sans-serif; }
+  body { min-height:100vh; }
+  .tool { display:grid; grid-template-columns:340px minmax(0,1fr); min-height:100vh; }
+  .controls { border-right:1px solid #cbd5e1; padding:14px; }
+  textarea,select,input[type="number"],button { font:inherit; color:inherit; background:#fff; border:1px solid #94a3b8; border-radius:0; }
+  textarea { width:100%; height:220px; resize:vertical; padding:8px; font-family:"DejaVu Sans Mono",ui-monospace,SFMono-Regular,Consolas,monospace; font-size:12px; line-height:1.55; word-break:break-all; }
+  select,input[type="number"] { width:100%; height:34px; padding:4px 6px; }
+  label.field { display:block; margin:0 0 10px; font-size:12px; }
+  label.field > span { display:block; margin:0 0 3px; }
+  .row { display:grid; grid-template-columns:1fr 88px 104px; gap:6px; margin-top:10px; }
+  .checks { display:flex; flex-wrap:wrap; gap:12px; padding:10px 0; border-top:1px solid #e2e8f0; border-bottom:1px solid #e2e8f0; margin:2px 0 10px; font-size:12px; }
+  .checks label { white-space:nowrap; }
+  input[type="checkbox"] { margin:0 4px 0 0; vertical-align:-1px; }
+  .actions { display:flex; gap:6px; flex-wrap:wrap; }
+  button { height:34px; padding:0 10px; cursor:pointer; }
+  button:hover { background:#f1f5f9; }
+  button:disabled { color:#94a3b8; cursor:not-allowed; }
+  .status { min-height:18px; margin:8px 0 0; font-size:11px; color:#b42318; white-space:pre-wrap; }
+  .preview { overflow:auto; padding:14px; }
+  .preview svg { display:block; max-width:none; height:auto; }
+  @media (max-width:900px) { .tool { grid-template-columns:1fr; } .controls { border-right:0; border-bottom:1px solid #cbd5e1; } }
+</style>
+</head>
+<body>
+<div class="tool">
+  <div class="controls">
+    <textarea id="hex" spellcheck="false"></textarea>
+    <div class="row">
+      <label class="field"><span>形式</span><select id="mode">
+        <option value="auto">自動</option>
+        <option value="ethernet">Ethernet II</option>
+        <option value="ipv4">IPv4</option>
+        <option value="ipv6">IPv6</option>
+        <option value="raw">Raw</option>
+      </select></label>
+      <label class="field"><span>1行</span><input type="number" id="cols" min="8" max="36" value="26"></label>
+      <label class="field"><span>ASCII上限</span><input type="number" id="asciilimit" min="16" max="8000" value="256"></label>
+    </div>
+    <div class="checks">
+      <label><input type="checkbox" id="showNames" checked>セグメント名</label>
+      <label><input type="checkbox" id="showHex" checked>HEX</label>
+      <label><input type="checkbox" id="showDecode" checked>デコード結果</label>
+    </div>
+    <div class="actions">
+      <button type="button" id="sample">サンプル</button>
+      <button type="button" id="saveSvg">SVG保存</button>
+      <button type="button" id="savePng">PNG保存</button>
+    </div>
+    <div class="status" id="error"></div>
+  </div>
+  <div class="preview" id="view"></div>
+</div>
+<script>
+(()=>{
+'use strict';
+const EXAMPLE='bc241186b507bc2411a2acbc080045000054e6ab400040013fb30a0400200a0400230800fd79fe1800016cfebe6a0000000005300d0000000000101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f3031323334353637';
+const $=id=>document.getElementById(id);
+const C={dst:'#1F5CBD',src:'#0A8067',etype:'#A46A09',ip:'#6C46B3',icmp:'#BA4562',app:'#946418',data:'#0A7E99',plain:'#42526E',sep:'#94A0B2'};
+const BG={ether:['#F7F8FA','#A2ADBC'],ip:['#F2EEFB','#A78ED4'],icmp:['#FDF0F3','#DF98AA'],app:['#FEF4DC','#D6B06A'],data:['#E8F7FA','#6DB6C5']};
+const family='Noto Sans CJK JP, Noto Sans JP, Hiragino Kaku Gothic ProN, Meiryo, sans-serif';
+const mono='DejaVu Sans Mono, SFMono-Regular, Consolas, monospace';
+let sourceSVG='';
+const canvas=document.createElement('canvas'),measure=canvas.getContext('2d');
+const width=(s,size=18,kind='sans')=>{measure.font=`700 ${size}px ${kind==='mono'?mono:family}`;return measure.measureText(s).width;};
+const escapeXML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]));
+const fmt=n=>Number(n.toFixed(2));
+const hex2=v=>v.toString(16).padStart(2,'0');
+const hex4=v=>'0x'+v.toString(16).padStart(4,'0');
+const u16=(a,i)=>a[i]*256+a[i+1];
+const u32=(a,i)=>(a[i]*16777216+a[i+1]*65536+a[i+2]*256+a[i+3])>>>0;
+const fmtMac=(a,i)=>Array.from(a.slice(i,i+6)).map(hex2).join(':');
+const fmtIP4=(a,i)=>Array.from(a.slice(i,i+4)).join('.');
+function fmtIP6(a,i){
+  const words=Array.from({length:8},(_,k)=>u16(a,i+2*k));
+  let best=-1,count=0;
+  for(let x=0;x<8;){if(words[x]!==0){x++;continue;}let y=x;while(y<8&&words[y]===0)y++;if(y-x>count&&y-x>1){best=x;count=y-x;}x=y;}
+  if(best<0)return words.map(x=>x.toString(16)).join(':');
+  const left=words.slice(0,best).map(x=>x.toString(16)).join(':');
+  const right=words.slice(best+count).map(x=>x.toString(16)).join(':');
+  return left+'::'+right;
+}
+function parseHex(raw){
+  let s=raw.trim();if(!s)throw Error('HEXを入力してください。');
+  s=s.replace(/0x/gi,'').replace(/[\s:,_-]/g,'');
+  if(!/^[0-9a-fA-F]+$/.test(s))throw Error('HEX以外の文字が含まれています。');
+  if(s.length%2)throw Error('HEXの桁数が奇数です。1バイトは2桁です。');
+  if(s.length>16000)throw Error('最大8,000バイトまで対応しています。');
+  const a=new Uint8Array(s.length/2);
+  for(let i=0;i<a.length;i++)a[i]=parseInt(s.slice(2*i,2*i+2),16);
+  return a;
+}
+function asciiTokens(a,start,end){
+  const tokens=[];
+  for(let i=start;i<end;i++){
+    const v=a[i];
+    tokens.push(v===10?'\\n':v===13?'\\r':v===9?'\\t':v>=32&&v<=126?String.fromCharCode(v):'·');
+  }
+  return tokens;
+}
+function asciiPreview(a,start,end,limit){
+  const upto=Math.min(end,start+limit),tokens=asciiTokens(a,start,upto);
+  const out=[],cap=70;
+  let buf='';
+  for(const token of tokens){if(buf.length+token.length>cap){out.push(buf);buf='';}buf+=token;}
+  if(buf||!out.length)out.push(buf);
+  return {lines:out,shown:upto-start,omitted:end-upto};
+}
+function asciiFlat(a,s,e,max=150){return asciiTokens(a,s,Math.min(e,s+max)).join('');}
+function parseDNS(a,start,end){
+  if(end-start<12)return null;
+  let id=u16(a,start),flags=u16(a,start+2),qd=u16(a,start+4),an=u16(a,start+6),ns=u16(a,start+8),ar=u16(a,start+10);
+  let name='';
+  if(qd){
+    const labels=[];let i=start+12,hops=0;
+    while(i<end&&hops++<80){
+      const n=a[i++];if(n===0)break;
+      if((n&0xc0)===0xc0){if(i>=end)break;const ptr=((n&0x3f)<<8)|a[i++];labels.push(`↪${ptr}`);break;}
+      if(n>63||i+n>end){labels.push('…');break;}
+      const part=asciiFlat(a,i,i+n,63);labels.push(part);i+=n;
+    }
+    name=labels.join('.');if(name.length>78)name=name.slice(0,75)+'…';
+  }
+  return {id,flags,qd,an,ns,ar,name};
+}
+function parseDHCP(a,start,end){
+  if(end-start<240||u32(a,start+236)!==0x63825363)return null;
+  const types={1:'Discover',2:'Offer',3:'Request',4:'Decline',5:'ACK',6:'NAK',7:'Release',8:'Inform'};
+  let msgType=null,off=start+240,steps=0;
+  while(off<end&&steps++<1024){const tag=a[off++];if(tag===255)break;if(tag===0)continue;
+    if(off>=end)break;const len=a[off++];if(off+len>end)break;
+    if(tag===53&&len>=1)msgType=types[a[off]]||`Type ${a[off]}`;
+    off+=len;
+  }
+  return {type:msgType||'BOOTP',op:a[start],xid:u32(a,start+4),yiaddr:fmtIP4(a,start+16),chaddr:fmtMac(a,start+28)};
+}
+function detectTLS(a,s,e){
+  if(e-s<5)return null;
+  const kind=a[s],maj=a[s+1],min=a[s+2],len=u16(a,s+3);
+  if(![20,21,22,23,24].includes(kind)||maj!==3||min>4)return null;
+  const names={20:'ChangeCipherSpec',21:'Alert',22:'Handshake',23:'Application Data',24:'Heartbeat'};
+  const hs={1:'ClientHello',2:'ServerHello',4:'NewSessionTicket',8:'EncryptedExtensions',11:'Certificate',13:'CertificateRequest',15:'CertificateVerify',20:'Finished'};
+  const subtype=kind===22&&e-s>5?` / ${hs[a[s+5]]||'Handshake '+a[s+5]}`:'';
+  return {label:`TLS record`,description:`${names[kind]}${subtype} / Version 0x${hex2(maj)}${hex2(min)} / Length ${len} B`,header:5};
+}
+function readHTTP(a,s,e){
+  const str=asciiFlat(a,s,Math.min(e,s+300));
+  if(!/^(?:GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|CONNECT|TRACE) [^\r\n]{1,140} HTTP\/\d\.\d|^HTTP\/\d\.\d \d{3}/.test(str))return null;
+  const first=str.split(/\\r\\n|\\n|\\r/)[0].slice(0,100);
+  const host=(str.match(/(?:^|\\r\\n)Host:\s*(.*?)(?:\\r\\n|\\n|$)/i)||[])[1];
+  return {first,host};
+}
+function readTextProtocol(a,s,e){
+  const str=asciiFlat(a,s,Math.min(e,s+150));
+  if(/^SSH-\d\.\d-/.test(str))return {name:'SSH',desc:str.split(/\\r|\\n/)[0].slice(0,95)};
+  if(/^(HELO|EHLO|MAIL FROM:|RCPT TO:|DATA\\r|220 |250 |354 )/i.test(str))return {name:'SMTP',desc:str.split(/\\r|\\n/)[0].slice(0,95)};
+  if(/^(USER |PASS |LIST|RETR |STOR |220 |331 |230 )/i.test(str))return {name:'FTP',desc:str.split(/\\r|\\n/)[0].slice(0,95)};
+  if(/^(M-SEARCH |NOTIFY |HTTP\/1\.1 200 OK|SUBSCRIBE |UNSUBSCRIBE )/.test(str))return {name:'SSDP / HTTPU',desc:str.split(/\\r|\\n/)[0].slice(0,95)};
+  return null;
+}
+function classify(a,opts={}){
+  const N=a.length,p={layers:[],colors:new Array(N).fill('data'),decoder:[],labels:[],titleParts:[],warnings:[]};
+  const mode=opts.mode||'auto',asciiLimit=opts.asciiLimit||256;
+  const T=(text,color)=>({text:String(text),color});
+  const line=(id,parts)=>p.decoder.push({id,parts});
+  const label=(text,color,id)=>p.labels.push({text,color,id});
+  function layer(id,name,start,end,color,bg){
+    if(end<=start)return false;
+    p.layers.push({id,name,start,end,color,bg});
+    for(let i=start;i<end;i++)p.colors[i]=color;
+    return true;
+  }
+  function dataLayer(start,end,isApp=false){
+    if(end<=start)return;
+    const key=isApp?'app':'data';
+    if(!isApp){layer('data','Data',start,end,'data','data');label('    ','sep');label('Data','data','data');}
+    line(key,[T(isApp?'Payload  ':'Data  ','plain'),T(`${end-start} B`,isApp?'app':'data')]);
+    const result=asciiPreview(a,start,end,asciiLimit);
+    for(let i=0;i<result.lines.length;i++)line(key,[T(i===0?'ASCII  ':'　        ','plain'),T(result.lines[i],isApp?'app':'data')]);
+    if(result.omitted)line(key,[T(`… 残り ${result.omitted} BはASCII表示を省略（HEXは全件表示）`,'sep')]);
+  }
+  function application(name,summary,begin,end,details=[]){
+    layer('app',name,begin,end,'app','app');label('    ','sep');label(name,'app','app');
+    p.titleParts.push(name);
+    line('app',[T(`${name}  `,'plain'),T(summary,'app')]);
+    for(const [key,value] of details)line('app',[T(`${key}  `,'plain'),T(value,'app')]);
+    dataLayer(begin,end,true);
+  }
+  let link=mode;
+  if(link==='auto'){
+    if(N>=14){
+      const e=u16(a,12);
+      link=[0x0800,0x86dd,0x0806,0x8100,0x88a8,0x88cc,0x8864].includes(e)?'ethernet':
+        a[0]>>4===4&&N>=20?'ipv4':a[0]>>4===6&&N>=40?'ipv6':'ethernet';
+    }else link=(a[0]>>4===4&&N>=20)?'ipv4':(a[0]>>4===6&&N>=40)?'ipv6':'raw';
+  }
+  let net=0,etherType=0,linkName='';
+  if(link==='ethernet'){
+    if(N<14)throw Error('Ethernet IIヘッダには最低14バイト必要です。入力形式を「生データ」にすることもできます。');
+    etherType=u16(a,12);net=14;let tags=[];
+    for(let k=0;k<4&&[0x8100,0x88a8,0x9100].includes(etherType);k++){
+      if(net+4>N){p.warnings.push('VLANタグが途中で切れています。');break;}
+      tags.push(u16(a,net)&0x0fff);etherType=u16(a,net+2);net+=4;
+    }
+    const ethernetNames={0x0800:'IPv4',0x86dd:'IPv6',0x0806:'ARP',0x88cc:'LLDP',0x8864:'PPPoE'};
+    const eName=ethernetNames[etherType]||hex4(etherType);
+    layer('ether','Ethernet II',0,N,'plain','ether');
+    for(let i=0;i<6;i++)p.colors[i]='dst';for(let i=6;i<12;i++)p.colors[i]='src';for(let i=12;i<net;i++)p.colors[i]='etype';
+    label('Ethernet II  ','plain','ether');label('宛先MAC','dst');label('  ·  ','sep');label('送信元MAC','src');label('  ·  ','sep');label(tags.length?`VLAN ×${tags.length}`:'EtherType','etype');
+    line('ether',[T(`宛先MAC  ${fmtMac(a,0)}`,'dst'),T('    ·    ','sep'),T(`送信元MAC  ${fmtMac(a,6)}`,'src')]);
+    line('ether',[T(`EtherType  ${eName} (${hex4(etherType)})${tags.length?' / VLAN ID '+tags.join(', '):''}`,'etype')]);
+    p.titleParts.push('Ethernet II');
+  }else if(link==='ipv4'){etherType=0x0800;net=0;}
+  else if(link==='ipv6'){etherType=0x86dd;net=0;}
+  else if(link==='raw'){
+    layer('data','Raw Data',0,N,'data','data');label('Raw Data','data','data');p.titleParts.push('Raw');
+    line('data',[T(`Raw Data  ${N} B`,'data')]);
+    const preview=asciiPreview(a,0,N,asciiLimit);
+    for(let i=0;i<preview.lines.length;i++)line('data',[T(i?'　        ':'ASCII  ','plain'),T(preview.lines[i],'data')]);
+    if(preview.omitted)line('data',[T(`… 残り ${preview.omitted} BはASCII表示を省略`,'sep')]);
+    return p;
+  }else throw Error('入力形式が不正です。');
+  if(net>=N){return p;}
+  if(etherType===0x0806){
+    if(N-net>=8){
+      const htype=u16(a,net),ptype=u16(a,net+2),hlen=a[net+4],plen=a[net+5],opcode=u16(a,net+6);
+      const arpEnd=net+8+2*(hlen+plen),end=Math.min(N,arpEnd);
+      layer('ip','ARP',net,end,'ip','ip');label('    ','sep');label('ARP','ip','ip');p.titleParts.push('ARP');
+      const opName=opcode===1?'Request':opcode===2?'Reply':`Opcode ${opcode}`;
+      line('ip',[T('ARP  ','plain'),T(`${opName} / HTYPE ${htype} / PTYPE ${hex4(ptype)} / HLEN ${hlen} / PLEN ${plen}`,'ip')]);
+      if(hlen===6&&plen===4&&ptype===0x0800&&N>=arpEnd){
+        const sh=net+8,sp=sh+6,th=sp+4,tp=th+6;
+        line('ip',[T('送信元  ','plain'),T(`${fmtIP4(a,sp)} (${fmtMac(a,sh)})`,'ip')]);
+        line('ip',[T('宛先  ','plain'),T(`${fmtIP4(a,tp)} (${fmtMac(a,th)})`,'ip')]);
+      }else p.warnings.push('ARPアドレス部は未対応の形式か、データ不足です。');
+      if(N>arpEnd)p.warnings.push(`ARP後の${N-arpEnd} BはEthernetパディングの可能性があります。`);
+    }else{p.warnings.push('ARPヘッダが途中で切れています。');dataLayer(net,N);}
+    return p;
+  }
+  if(etherType===0x88cc){
+    layer('app','LLDP',net,N,'app','app');label('    ','sep');label('LLDP','app','app');p.titleParts.push('LLDP');
+    let o=net,tlvs=0,types=[];
+    while(o+2<=N&&tlvs<64){const hdr=u16(a,o),type=hdr>>9,len=hdr&511;o+=2;if(o+len>N)break;tlvs++;types.push(type);o+=len;if(type===0)break;}
+    line('app',[T('LLDP  ','plain'),T(`TLV ${tlvs}個 / Type ${types.slice(0,12).join(', ')}${types.length>12?'…':''}`,'app')]);
+    dataLayer(net,N,true);return p;
+  }
+  if(etherType!==0x0800&&etherType!==0x86dd){
+    if(etherType===0x8864){p.warnings.push('PPPoEセッションの内部プロトコル解析には未対応です。');}
+    dataLayer(net,N);p.titleParts.push('Payload');return p;
+  }
+
+  let ipEnd=N,transport=net,proto=-1,netName='',fragment=false;
+  if(etherType===0x0800){
+    if(N-net<20||a[net]>>4!==4) {p.warnings.push('IPv4ヘッダが不足、またはVersionが不正です。');dataLayer(net,N);return p;}
+    const ihl=(a[net]&15)*4,total=u16(a,net+2);
+    if(ihl<20||net+ihl>N){p.warnings.push('IPv4ヘッダ長が不正または途中で切れています。');dataLayer(net,N);return p;}
+    ipEnd=Math.min(N,net+Math.max(total,ihl));transport=net+ihl;proto=a[net+9];netName='IPv4';
+    const ff=u16(a,net+6),flagNames=[];if(ff&0x4000)flagNames.push('DF');if(ff&0x2000)flagNames.push('MF');
+    layer('ip','IPv4',net,ipEnd,'ip','ip');label('    ','sep');label('IPv4','ip','ip');p.titleParts.push('IPv4');
+    line('ip',[T('IPv4  ','plain'),T(`${fmtIP4(a,net+12)} → ${fmtIP4(a,net+16)}`,'ip')]);
+    line('ip',[T('ヘッダ  ','plain'),T(`TTL ${a[net+8]} / Total Length ${total} B / IHL ${ihl} B / Protocol ${proto}${flagNames.length?' / '+flagNames.join(', '):''}`,'ip')]);
+    line('ip',[T('識別・検査  ','plain'),T(`Version ${a[net]>>4} / DSCP ${a[net+1]>>2} / ECN ${a[net+1]&3} / ID ${hex4(u16(a,net+4))} / Offset ${ff&0x1fff} / Checksum ${hex4(u16(a,net+10))}`,'ip')]);
+    if(total<ihl)p.warnings.push('IPv4 Total Lengthがヘッダ長未満です。');
+    if(net+total>N)p.warnings.push('IPv4パケットが途中で切れています。');
+    if(net+total<N)p.warnings.push(`末尾${N-(net+total)} BはEthernetパディング等として解析対象外です。`);
+    if(ff&0x1fff){fragment=true;p.warnings.push('後続IPv4フラグメントのためトランスポートヘッダを解析しません。');}
+    else if(ff&0x2000)p.warnings.push('IPv4フラグメント（先頭）です。上位データが途中の場合があります。');
+  }else{
+    if(N-net<40||a[net]>>4!==6){p.warnings.push('IPv6ヘッダが不足、またはVersionが不正です。');dataLayer(net,N);return p;}
+    const plen=u16(a,net+4);ipEnd=plen===0?N:Math.min(N,net+40+plen);
+    netName='IPv6';proto=a[net+6];transport=net+40;
+    let extNames=[],count=0;
+    while([0,43,44,51,60,135].includes(proto)&&count++<16&&transport+2<=ipEnd){
+      const next=a[transport],kind=proto;
+      let sz=kind===44?8:kind===51?(a[transport+1]+2)*4:(a[transport+1]+1)*8;
+      if(sz<8||transport+sz>ipEnd){p.warnings.push('IPv6拡張ヘッダが途中で切れています。');fragment=true;break;}
+      if(kind===44){const frag=u16(a,transport+2);if(frag&0xfff8){fragment=true;p.warnings.push('後続IPv6フラグメントは解析しません。');}}
+      const names={0:'Hop-by-Hop',43:'Routing',44:'Fragment',51:'AH',60:'Destination',135:'Mobility'};
+      extNames.push(names[kind]);transport+=sz;proto=next;
+    }
+    if(proto===50){fragment=true;p.warnings.push('ESPで暗号化されたペイロードは復号できません。');}
+    layer('ip','IPv6',net,ipEnd,'ip','ip');label('    ','sep');label('IPv6','ip','ip');p.titleParts.push('IPv6');
+    line('ip',[T('IPv6 送信元  ','plain'),T(fmtIP6(a,net+8),'ip')]);
+    line('ip',[T('IPv6 宛先  ','plain'),T(fmtIP6(a,net+24),'ip')]);
+    line('ip',[T('ヘッダ  ','plain'),T(`Hop Limit ${a[net+7]} / Payload Length ${plen} B / Next Header ${proto}`,'ip')]);
+    line('ip',[T('制御情報  ','plain'),T(`Version ${a[net]>>4} / Traffic Class ${((a[net]&15)<<4)|(a[net+1]>>4)} / Flow Label ${((a[net+1]&15)<<16)|(a[net+2]<<8)|a[net+3]}`,'ip')]);
+    if(extNames.length)line('ip',[T('拡張ヘッダ  ','plain'),T(extNames.join(' → '),'ip')]);
+    if(plen!==0&&net+40+plen>N)p.warnings.push('IPv6パケットが途中で切れています。');
+    if(plen!==0&&net+40+plen<N)p.warnings.push(`末尾${N-(net+40+plen)} BはIPパケット外です。`);
+  }
+  if(transport>=ipEnd)return p;
+  const available=ipEnd-transport;
+  if(fragment){dataLayer(transport,ipEnd);return p;}
+  let payload=transport,sp=-1,dp=-1,isUDP=false,isTCP=false;
+  if((netName==='IPv4'&&proto===1||netName==='IPv6'&&proto===58)&&available>=4){
+    const type=a[transport],code=a[transport+1],ck=u16(a,transport+2);
+    const echo=netName==='IPv4'?[8,0].includes(type):[128,129].includes(type);
+    const names4={0:'Echo Reply',3:'Destination Unreachable',5:'Redirect',8:'Echo Request',11:'Time Exceeded',12:'Parameter Problem',13:'Timestamp Request',14:'Timestamp Reply'};
+    const names6={1:'Destination Unreachable',2:'Packet Too Big',3:'Time Exceeded',4:'Parameter Problem',128:'Echo Request',129:'Echo Reply',133:'Router Solicitation',134:'Router Advertisement',135:'Neighbor Solicitation',136:'Neighbor Advertisement'};
+    const name=(netName==='IPv4'?names4:names6)[type]||`Type ${type}`;
+    const headerLen=Math.min(8,available);payload=transport+headerLen;
+    layer('icmp',netName==='IPv6'?'ICMPv6':'ICMP',transport,ipEnd,'icmp','icmp');label('    ','sep');label(netName==='IPv6'?'ICMPv6':'ICMP','icmp','icmp');p.titleParts.push(netName==='IPv6'?'ICMPv6':`ICMP ${name}`);
+    line('icmp',[T(`${netName==='IPv6'?'ICMPv6':'ICMP'}  `,'plain'),T(`${name} (Type ${type}, Code ${code}) / Checksum ${hex4(ck)}`,'icmp')]);
+    if(echo&&available>=8)line('icmp',[T('Echo  ','plain'),T(`Identifier ${hex4(u16(a,transport+4))} / Sequence ${u16(a,transport+6)}`,'icmp')]);
+    if(available<8)p.warnings.push('ICMPヘッダが途中で切れています。');
+  }else if(proto===17&&available>=8){
+    sp=u16(a,transport);dp=u16(a,transport+2);isUDP=true;payload=transport+8;
+    const udplen=u16(a,transport+4),ck=u16(a,transport+6);
+    if(udplen>=8&&udplen<available)ipEnd=transport+udplen;
+    layer('icmp','UDP',transport,ipEnd,'icmp','icmp');label('    ','sep');label('UDP','icmp','icmp');p.titleParts.push('UDP');
+    line('icmp',[T('UDP  ','plain'),T(`${sp} → ${dp} / Length ${udplen} B / Checksum ${hex4(ck)}`,'icmp')]);
+    if(udplen>available)p.warnings.push('UDPデータが途中で切れています。');
+  }else if(proto===6&&available>=20){
+    sp=u16(a,transport);dp=u16(a,transport+2);const hlen=(a[transport+12]>>4)*4;
+    if(hlen>=20&&hlen<=available){
+      payload=transport+hlen;isTCP=true;
+      const flags=[],flagbits=a[transport+13];for(const [name,mask] of [['FIN',1],['SYN',2],['RST',4],['PSH',8],['ACK',16],['URG',32],['ECE',64],['CWR',128]])if(flagbits&mask)flags.push(name);
+      if(a[transport+12]&1)flags.push('NS');
+      layer('icmp','TCP',transport,ipEnd,'icmp','icmp');label('    ','sep');label('TCP','icmp','icmp');p.titleParts.push('TCP');
+      line('icmp',[T('TCP  ','plain'),T(`${sp} → ${dp} / Seq ${u32(a,transport+4)} / Ack ${u32(a,transport+8)}`,'icmp')]);
+      line('icmp',[T('Flags  ','plain'),T(`${flags.join(', ')||'None'} / Window ${u16(a,transport+14)} / Header ${hlen} B`,'icmp')]);
+      line('icmp',[T('検査・緊急  ','plain'),T(`Checksum ${hex4(u16(a,transport+16))} / Urgent Pointer ${u16(a,transport+18)}`,'icmp')]);
+    }else p.warnings.push('TCPヘッダ長が不正または途中で切れています。');
+  }else if(proto===89&&available>=16){
+    const ospfVersion=a[transport],ospfType=a[transport+1],ospfLen=u16(a,transport+2);
+    const names={1:'Hello',2:'Database Description',3:'Link State Request',4:'Link State Update',5:'Link State Acknowledgment'};
+    const hLen=ospfVersion===2?24:16;
+    payload=transport+Math.min(hLen,available);
+    layer('icmp','OSPF',transport,ipEnd,'icmp','icmp');label('    ','sep');label('OSPF','icmp','icmp');p.titleParts.push('OSPF');
+    line('icmp',[T('OSPF  ','plain'),T(`v${ospfVersion} / ${names[ospfType]||'Type '+ospfType} / Length ${ospfLen} B / Router ID ${fmtIP4(a,transport+4)}`,'icmp')]);
+    line('icmp',[T('Area ID  ','plain'),T(fmtIP4(a,transport+8),'icmp')]);
+  }else if(proto===2&&available>=8){
+    const type=a[transport];payload=transport+8;
+    layer('icmp','IGMP',transport,ipEnd,'icmp','icmp');label('    ','sep');label('IGMP','icmp','icmp');p.titleParts.push('IGMP');
+    line('icmp',[T('IGMP  ','plain'),T(`Type ${hex2(type)} / Group ${fmtIP4(a,transport+4)} / Checksum ${hex4(u16(a,transport+2))}`,'icmp')]);
+  }else if(proto===132&&available>=12){
+    payload=transport+12;
+    layer('icmp','SCTP',transport,ipEnd,'icmp','icmp');label('    ','sep');label('SCTP','icmp','icmp');p.titleParts.push('SCTP');
+    line('icmp',[T('SCTP  ','plain'),T(`${u16(a,transport)} → ${u16(a,transport+2)} / Verification Tag 0x${u32(a,transport+4).toString(16)}`,'icmp')]);
+  }else if(proto===47&&available>=4){
+    const f=u16(a,transport),inner=u16(a,transport+2);payload=transport+4+((f&0x8000)?4:0)+((f&0x2000)?4:0)+((f&0x1000)?4:0);
+    if(payload>ipEnd)payload=transport+4;
+    layer('icmp','GRE',transport,ipEnd,'icmp','icmp');label('    ','sep');label('GRE','icmp','icmp');p.titleParts.push('GRE');
+    line('icmp',[T('GRE  ','plain'),T(`Flags ${hex4(f)} / Protocol ${hex4(inner)}`,'icmp')]);
+    p.warnings.push('GRE内側パケットの再帰解析には未対応です。');
+  }else if(![1,2,6,17,47,58,89,132].includes(proto)){
+    p.warnings.push(`IP Protocol/Next Header ${proto}は詳細解析に未対応です。`);
+  }else if(available>0)p.warnings.push('上位プロトコルヘッダが途中で切れている可能性があります。');
+  if(payload>=ipEnd)return p;
+  // Application protocols: recognize signatures and/or commonly designated ports.
+  const dnsPorts=[53,5353];
+  if((isUDP||isTCP)&&dnsPorts.includes(sp)|| (isUDP||isTCP)&&dnsPorts.includes(dp)){
+    const off=isTCP?payload+2:payload;
+    const dns=isTCP?(payload+2<=ipEnd?parseDNS(a,off,ipEnd):null):parseDNS(a,off,ipEnd);
+    if(dns){
+      const summary=`${dns.flags&0x8000?'Response':'Query'} / ID ${hex4(dns.id)} / Q ${dns.qd} / A ${dns.an} / NS ${dns.ns} / AR ${dns.ar}`;
+      application([sp,dp].includes(5353)?'mDNS':'DNS',summary,payload,ipEnd,dns.name?[['質問',dns.name]]:[]);
+      return p;
+    }
+  }
+  if(isUDP&&([67,68].includes(sp)||[67,68].includes(dp))){
+    const dhcp=parseDHCP(a,payload,ipEnd);
+    if(dhcp){application('DHCP',`${dhcp.type} / XID 0x${dhcp.xid.toString(16)} / yiaddr ${dhcp.yiaddr}`,payload,ipEnd,[['クライアントMAC',dhcp.chaddr]]);return p;}
+  }
+  if(isUDP&&([161,162].includes(sp)||[161,162].includes(dp))&&ipEnd-payload>=8&&a[payload]===0x30){
+    const end=ipEnd,readLen=(offset)=>{
+      if(offset>=end)return null;const b=a[offset];
+      if(b<128)return {n:b,next:offset+1};
+      const count=b&127;if(count<1||count>3||offset+count>=end)return null;
+      let n=0;for(let i=0;i<count;i++)n=n*256+a[offset+1+i];return {n,next:offset+1+count};
+    };
+    let o=payload+1;const seq=readLen(o);
+    if(seq){o=seq.next;let version='?',community='',pdu='';
+      if(o+2<end&&a[o]===2){const len=readLen(o+1);if(len&&len.n>=1&&len.n<=4&&len.next+len.n<=end){
+        let v=0;for(let i=0;i<len.n;i++)v=v*256+a[len.next+i];version=({0:'v1',1:'v2c',3:'v3'})[v]||String(v);o=len.next+len.n;
+      }}
+      if(o+2<end&&a[o]===4){const len=readLen(o+1);if(len&&len.next+len.n<=end){community=asciiFlat(a,len.next,len.next+Math.min(len.n,48));o=len.next+len.n;}}
+      const pdus={0xa0:'GetRequest',0xa1:'GetNextRequest',0xa2:'Response',0xa3:'SetRequest',0xa4:'Trap',0xa5:'GetBulkRequest',0xa6:'InformRequest',0xa7:'SNMPv2-Trap',0xa8:'Report'};
+      pdu=pdus[a[o]]||'PDU未解析';
+      application('SNMP',`${version} / ${pdu}${community?' / Community '+community:''}`,payload,ipEnd);
+      return p;
+    }
+  }
+  if(isUDP&&(sp===123||dp===123)&&ipEnd-payload>=48){
+    const first=a[payload],ver=(first>>3)&7,mode=first&7,stratum=a[payload+1];
+    application('NTP',`Version ${ver} / Mode ${mode} / Stratum ${stratum} / Transmit Seconds ${u32(a,payload+40)}`,payload,ipEnd);return p;
+  }
+  if(isTCP){
+    const http=readHTTP(a,payload,ipEnd);
+    if(http){application('HTTP/1.x',http.first,payload,ipEnd,http.host?[['Host',http.host]]:[]);return p;}
+    const tls=detectTLS(a,payload,ipEnd);
+    if(tls){application('TLS',tls.description,payload,ipEnd);p.warnings.push('TLSの暗号化された内容はASCIIでは読めません。');return p;}
+    const textProto=readTextProtocol(a,payload,ipEnd);
+    if(textProto){application(textProto.name,textProto.desc,payload,ipEnd);return p;}
+  }
+  if(isUDP&&(sp===1900||dp===1900)){
+    const st=readTextProtocol(a,payload,ipEnd);
+    if(st){application(st.name,st.desc,payload,ipEnd);return p;}
+  }
+  if(isUDP&&(sp===443||dp===443))p.warnings.push('UDP/443はQUICの可能性がありますが、本ツールでは復号・詳細解析しません。');
+  dataLayer(payload,ipEnd);return p;
+}
+
+// Shared field model ---------------------------------------------------------
+// Parsing produces one field/color model. The v8 renderer reuses it in all
+// three sections while keeping text-flow and byte-grid layout independent.
+
+const FIELD_PALETTE=[
+  '#245BC0','#0B846A','#A56708','#7A4DB3','#BE4662','#087E9A',
+  '#B6542D','#5168A8','#8B5D2D','#617C3C','#9D408C','#3D7C75',
+  '#C15B7B','#4F70B5','#8E6A16','#6F55A5'
+];
+const PROTOCOL_TEXT={ether:'#42526E',ip:'#6D4AB4',icmp:'#B64663',data:'#0A7E99',app:'#7651A9',plain:'#42526E'};
+
+function buildFields(a,p){
+  const out=[],n=a.length,groupCounts=new Map();
+  const keyForGroup=(l)=>l.id==='ether'?'ether':l.id==='data'?'data':l.id==='app'?'app':l.id==='icmp'?'icmp':l.id==='ip'?'ip':l.id;
+  const colorFor=(l,name)=>{
+    if(l.id==='data')return '#087E9A';
+    if(l.id==='ether'){
+      if(/宛先MAC/.test(name))return '#245BC0';
+      if(/送信元MAC/.test(name))return '#0B846A';
+      if(/EtherType|VLAN/.test(name))return '#A56708';
+    }
+    const g=l.id+':'+l.name;
+    const idx=groupCounts.get(g)||0;groupCounts.set(g,idx+1);
+    const base=l.id==='ip'?3:l.id==='icmp'?4:l.id==='app'?8:0;
+    return FIELD_PALETTE[(base+idx)%FIELD_PALETTE.length];
+  };
+  const add=(l,start,end,name)=>{
+    start=Math.max(0,Math.min(n,start));end=Math.max(start,Math.min(n,end));
+    if(end<=start)return;
+    out.push({start,end,name,groupId:l.id,groupName:l.name,groupKey:keyForGroup(l),color:colorFor(l,name),layer:l});
+  };
+  const layers=[...p.layers].sort((a,b)=>a.start-b.start||b.end-a.end);
+  for(const l of layers){
+    const children=layers.filter(x=>x!==l&&x.start>l.start&&x.start<l.end&&x.end<=l.end);
+    const finish=children.length?Math.min(...children.map(x=>x.start)):l.end;
+    const s=l.start,len=finish-s,proto=l.name;
+    if(len<=0)continue;
+    const part=(off,size,name)=>add(l,s+off,Math.min(finish,s+off+size),name);
+    if(l.id==='ether'){
+      part(0,6,'宛先MAC');part(6,6,'送信元MAC');
+      let off=12;
+      while(off+2<=len){
+        const t=u16(a,s+off);part(off,2,off===12?'EtherType':'VLAN TCI');off+=2;
+        if([0x8100,0x88a8,0x9100].includes(t)&&off+2<=len){part(off,2,'EtherType');off+=2;}else break;
+      }
+    }else if(proto==='IPv4'){
+      part(0,1,'Ver/IHL');part(1,1,'DSCP/ECN');part(2,2,'Total Length');part(4,2,'Identification');
+      part(6,2,'Flags/Offset');part(8,1,'TTL');part(9,1,'Protocol');part(10,2,'Header Checksum');
+      part(12,4,'送信元IP');part(16,4,'宛先IP');if(len>20)part(20,len-20,'Options');
+    }else if(proto==='IPv6'){
+      part(0,4,'Ver/TC/Flow');part(4,2,'Payload Length');part(6,1,'Next Header');part(7,1,'Hop Limit');
+      part(8,16,'送信元IP');part(24,16,'宛先IP');if(len>40)part(40,len-40,'Extension Header');
+    }else if(proto==='ARP'){
+      part(0,2,'HTYPE');part(2,2,'PTYPE');part(4,1,'HLEN');part(5,1,'PLEN');part(6,2,'Operation');
+      if(len>=8){const hl=a[s+4],pl=a[s+5];let off=8;
+        for(const [name,sz] of [['送信元MAC',hl],['送信元IP',pl],['宛先MAC',hl],['宛先IP',pl]]){if(!sz||off>=len)break;part(off,sz,name);off+=sz;}
+      }
+    }else if(proto==='ICMP'||proto==='ICMPv6'){
+      part(0,1,'Type');part(1,1,'Code');part(2,2,'Checksum');
+      if(len>=8){const t=a[s];if([0,8,128,129].includes(t)){part(4,2,'Identifier');part(6,2,'Sequence');}else part(4,4,'Message Data');}
+    }else if(proto==='UDP'){
+      part(0,2,'Source Port');part(2,2,'Destination Port');part(4,2,'Length');part(6,2,'Checksum');
+    }else if(proto==='TCP'){
+      part(0,2,'Source Port');part(2,2,'Destination Port');part(4,4,'Sequence Number');part(8,4,'Acknowledgment Number');
+      part(12,2,'Offset/Flags');part(14,2,'Window');part(16,2,'Checksum');part(18,2,'Urgent Pointer');if(len>20)part(20,len-20,'Options');
+    }else if(proto==='IGMP'){
+      part(0,1,'Type');part(1,1,'Max Resp');part(2,2,'Checksum');part(4,4,'Group Address');
+    }else if(proto==='OSPF'){
+      part(0,1,'Version');part(1,1,'Type');part(2,2,'Packet Length');part(4,4,'Router ID');part(8,4,'Area ID');part(12,2,'Checksum');if(len>14)part(14,len-14,'OSPF Data');
+    }else if(proto==='SCTP'){
+      part(0,2,'Source Port');part(2,2,'Destination Port');part(4,4,'Verification Tag');part(8,4,'Checksum');if(len>12)part(12,len-12,'Chunks');
+    }else if(proto==='GRE'){
+      part(0,2,'Flags/Version');part(2,2,'Protocol Type');if(len>4)part(4,len-4,'GRE Options');
+    }else if(proto==='DNS'||proto==='mDNS'){
+      const tcpPrefix=p.layers.some(x=>x.name==='TCP')?2:0;
+      if(tcpPrefix)part(0,2,'Message Length');
+      part(tcpPrefix,2,'ID');part(tcpPrefix+2,2,'Flags');part(tcpPrefix+4,2,'QDCOUNT');part(tcpPrefix+6,2,'ANCOUNT');
+      part(tcpPrefix+8,2,'NSCOUNT');part(tcpPrefix+10,2,'ARCOUNT');if(len>tcpPrefix+12)part(tcpPrefix+12,len-tcpPrefix-12,'DNS Data');
+    }else if(proto==='DHCP'){
+      part(0,1,'Op');part(1,1,'Hardware Type');part(2,1,'HLEN');part(3,1,'Hops');part(4,4,'Transaction ID');if(len>8)part(8,len-8,'BOOTP / Options');
+    }else if(proto==='NTP'){
+      part(0,1,'LI/VN/Mode');part(1,1,'Stratum');part(2,1,'Poll');part(3,1,'Precision');if(len>4)part(4,len-4,'Timestamps / Data');
+    }else if(proto==='TLS'){
+      part(0,1,'Content Type');part(1,2,'Version');part(3,2,'Length');if(len>5)part(5,len-5,'TLS Data');
+    }else if(proto==='LLDP'){
+      part(0,len,'TLV');
+    }else if(l.id==='data'){
+      part(0,len,'Data');
+    }else if(l.id==='app'){
+      part(0,len,proto);
+    }else{
+      part(0,len,proto==='Raw Data'?'Data':'Payload');
+    }
+  }
+  out.sort((a,b)=>a.start-b.start||a.end-b.end);
+  // Keep the deepest field for every byte. Header fields end exactly where the
+  // next nested protocol begins, so this stays disjoint for normal packets.
+  const result=[];let cursor=0;
+  for(const f of out){
+    if(f.end<=cursor)continue;
+    if(f.start>cursor){
+      const l=deepestLayerAt(p,cursor)||{id:'data',name:'Data',color:'data',bg:'data',start:cursor,end:f.start};
+      result.push({start:cursor,end:f.start,name:'Data',groupId:l.id,groupName:l.name,groupKey:l.id,color:'#087E9A',layer:l});
+    }
+    result.push({...f,start:Math.max(cursor,f.start)});cursor=Math.max(cursor,f.end);
+  }
+  if(cursor<n){const l=deepestLayerAt(p,cursor)||{id:'data',name:'Data',color:'data',bg:'data',start:cursor,end:n};result.push({start:cursor,end:n,name:'Data',groupId:l.id,groupName:l.name,groupKey:l.id,color:'#087E9A',layer:l});}
+  return result;
+}
+function deepestLayerAt(p,pos){
+  const c=p.layers.filter(l=>l.start<=pos&&pos<l.end).sort((a,b)=>(b.start-a.start)||(a.end-b.end));
+  return c[0]||null;
+}
+function roundedPath(points,radius=6){
+  const pts=[];
+  for(const p of points){const q=pts.at(-1);if(!q||Math.hypot(q[0]-p[0],q[1]-p[1])>.01)pts.push(p);}
+  if(pts.length>1&&Math.hypot(pts[0][0]-pts.at(-1)[0],pts[0][1]-pts.at(-1)[1])<.01)pts.pop();
+  if(pts.length<4)return '';
+  let d='';
+  for(let i=0;i<pts.length;i++){
+    const a=pts[(i+pts.length-1)%pts.length],p=pts[i],b=pts[(i+1)%pts.length];
+    const u=Math.hypot(a[0]-p[0],a[1]-p[1]),v=Math.hypot(b[0]-p[0],b[1]-p[1]);
+    const cross=(p[0]-a[0])*(b[1]-p[1])-(p[1]-a[1])*(b[0]-p[0]);
+    const r=(u<.01||v<.01||Math.abs(cross)<.01)?0:Math.min(radius,u*.45,v*.45);
+    const q=r?[p[0]+(a[0]-p[0])*r/u,p[1]+(a[1]-p[1])*r/u]:p;
+    const w=r?[p[0]+(b[0]-p[0])*r/v,p[1]+(b[1]-p[1])*r/v]:p;
+    d+=(i?' L ':'M ')+`${fmt(q[0])} ${fmt(q[1])}`;
+    d+=r?` Q ${fmt(p[0])} ${fmt(p[1])} ${fmt(w[0])} ${fmt(w[1])}`:` L ${fmt(w[0])} ${fmt(w[1])}`;
+  }
+  return d+' Z';
+}
+function layerDepths(p){
+  const m=new Map();
+  for(const l of p.layers){
+    const d=p.layers.filter(q=>q!==l&&q.start<=l.start&&l.end<=q.end&&(q.start<l.start||l.end<q.end)).length;
+    m.set(l,d);
+  }
+  return m;
+}
+function byteGeom(rows,cell=31,origin=56){
+  return {rows,cell,origin,rowRight:r=>origin+(r.end-r.start)*cell,
+    xFor:(row,byte)=>origin+(byte-row.start)*cell};
+}
+function intervalsForLayer(layer,geom){
+  const out=[];
+  for(let r=0;r<geom.rows.length;r++){
+    const row=geom.rows[r],s=Math.max(row.start,layer.start),e=Math.min(row.end,layer.end);if(s>=e)continue;
+    out.push({row:r,left:geom.xFor(row,s),right:geom.xFor(row,e)});
+  }
+  return out;
+}
+function continuousRibbon(intervals,rowTops,rowHeights,depth,maxDepth){
+  if(!intervals.length)return '';
+  const inset=depth*4,pad=11+maxDepth*4;
+  const b=intervals.map(v=>({row:v.row,left:v.left-pad+inset,right:v.right+pad-inset}));
+  for(let i=1;i<b.length;i++)if(b[i].row!==b[i-1].row+1)return '';
+  const pts=[],first=b[0],last=b.at(-1),shift=depth*2.6;
+  const top=i=>rowTops[i]+shift,bottom=i=>rowTops[i]+rowHeights[i]-shift;
+  pts.push([first.left,top(first.row)],[first.right,top(first.row)]);
+  for(let i=0;i<b.length;i++){
+    const cur=b[i];
+    if(i===b.length-1)pts.push([cur.right,bottom(cur.row)]);
+    else{
+      const next=b[i+1],seam=rowTops[next.row];
+      const y=seam+(next.right>cur.right?shift:next.right<cur.right?-shift:0);
+      pts.push([cur.right,y],[next.right,y]);
+    }
+  }
+  pts.push([last.left,bottom(last.row)]);
+  for(let i=b.length-1;i>=0;i--){
+    const cur=b[i];
+    if(i===0)pts.push([cur.left,top(cur.row)]);
+    else{
+      const prev=b[i-1],seam=rowTops[cur.row];
+      const y=seam+(cur.left<prev.left?shift:cur.left>prev.left?-shift:0);
+      pts.push([cur.left,y],[prev.left,y]);
+    }
+  }
+  return roundedPath(pts,Math.max(3.5,7-depth*.5));
+}
+function protocolNameColor(l){return PROTOCOL_TEXT[l.id]||PROTOCOL_TEXT.plain;}
+function protocolNumberName(n,ipv6=false){
+  const m={1:'ICMP',2:'IGMP',6:'TCP',17:'UDP',41:'IPv6',47:'GRE',50:'ESP',51:'AH',58:'ICMPv6',89:'OSPF',132:'SCTP'};return m[n]||String(n);
+}
+function decodeField(a,f){
+  const s=f.start,e=f.end,len=e-s,n=f.name,g=f.groupName;
+  const hx=()=>Array.from(a.slice(s,e),hex2).join(' ');
+  try{
+    if(f.groupId==='ether'){
+      if(n==='宛先MAC'||n==='送信元MAC')return fmtMac(a,s);
+      if(n==='EtherType')return `${({0x0800:'IPv4',0x86dd:'IPv6',0x0806:'ARP',0x88cc:'LLDP',0x8864:'PPPoE'})[u16(a,s)]||hex4(u16(a,s))} (${hex4(u16(a,s))})`;
+      if(n==='VLAN TCI'){const v=u16(a,s);return `PCP ${v>>13} / DEI ${(v>>12)&1} / VID ${v&0xfff}`;}
+    }
+    if(g==='IPv4'){
+      if(n==='Ver/IHL')return `Version ${a[s]>>4} / IHL ${(a[s]&15)*4} B`;
+      if(n==='DSCP/ECN')return `DSCP ${a[s]>>2} / ECN ${a[s]&3}`;
+      if(n==='Total Length')return `${u16(a,s)} B`;
+      if(n==='Identification')return hex4(u16(a,s));
+      if(n==='Flags/Offset'){const v=u16(a,s),flags=[];if(v&0x4000)flags.push('DF');if(v&0x2000)flags.push('MF');return `${flags.join(', ')||'なし'} / Offset ${v&0x1fff}`;}
+      if(n==='TTL')return String(a[s]);
+      if(n==='Protocol')return `${protocolNumberName(a[s])} (${a[s]})`;
+      if(n==='Header Checksum')return hex4(u16(a,s));
+      if(n==='送信元IP'||n==='宛先IP')return fmtIP4(a,s);
+      if(n==='Options')return `${len} B`;
+    }
+    if(g==='IPv6'){
+      if(n==='Ver/TC/Flow'){const tc=((a[s]&15)<<4)|(a[s+1]>>4),flow=((a[s+1]&15)<<16)|(a[s+2]<<8)|a[s+3];return `Version ${a[s]>>4} / TC ${tc} / Flow ${hexN(flow,5)}`;}
+      if(n==='Payload Length')return `${u16(a,s)} B`;
+      if(n==='Next Header')return `${protocolNumberName(a[s],true)} (${a[s]})`;
+      if(n==='Hop Limit')return String(a[s]);
+      if(n==='送信元IP'||n==='宛先IP')return fmtIP6(a,s);
+      if(n==='Extension Header')return `${len} B`;
+    }
+    if(g==='ARP'){
+      if(n==='HTYPE'||n==='PTYPE'||n==='Operation')return n==='PTYPE'?hex4(u16(a,s)):String(u16(a,s));
+      if(n==='HLEN'||n==='PLEN')return String(a[s]);
+      if(/MAC/.test(n)&&len===6)return fmtMac(a,s);if(/IP/.test(n)&&len===4)return fmtIP4(a,s);
+    }
+    if(g==='ICMP'||g==='ICMPv6'){
+      if(n==='Type'){const t=a[s],names=g==='ICMP'?{0:'Echo Reply',3:'Destination Unreachable',5:'Redirect',8:'Echo Request',11:'Time Exceeded'}:{128:'Echo Request',129:'Echo Reply',1:'Destination Unreachable',3:'Time Exceeded',135:'Neighbor Solicitation',136:'Neighbor Advertisement'};return `${names[t]||'Type'} (${t})`;}
+      if(n==='Code')return String(a[s]);if(n==='Checksum')return hex4(u16(a,s));if(n==='Identifier'||n==='Sequence')return `${u16(a,s)} (${hex4(u16(a,s))})`;return hx();
+    }
+    if(g==='UDP'){
+      if(n==='Source Port'||n==='Destination Port'||n==='Length')return String(u16(a,s));if(n==='Checksum')return hex4(u16(a,s));
+    }
+    if(g==='TCP'){
+      if(n==='Source Port'||n==='Destination Port'||n==='Window'||n==='Urgent Pointer')return String(u16(a,s));
+      if(n==='Sequence Number'||n==='Acknowledgment Number')return String(u32(a,s));
+      if(n==='Checksum')return hex4(u16(a,s));
+      if(n==='Offset/Flags'){const v=u16(a,s),fl=[];for(const [mask,name] of [[1,'FIN'],[2,'SYN'],[4,'RST'],[8,'PSH'],[16,'ACK'],[32,'URG'],[64,'ECE'],[128,'CWR']])if(v&mask)fl.push(name);return `Header ${(a[s]>>4)*4} B / ${fl.join(', ')||'Flags 0'}`;}
+      if(n==='Options')return `${len} B`;
+    }
+    if(g==='DNS'||g==='mDNS'){
+      if(n==='Message Length'||n==='ID'||n==='Flags'||/COUNT$/.test(n))return n==='Flags'?hex4(u16(a,s)):String(u16(a,s));if(n==='DNS Data')return `${len} B`;
+    }
+    if(g==='TLS'){
+      if(n==='Content Type')return String(a[s]);if(n==='Version')return `0x${hex2(a[s])}${hex2(a[s+1])}`;if(n==='Length')return `${u16(a,s)} B`;return `${len} B`;
+    }
+    if(g==='NTP'){if(n==='LI/VN/Mode')return `LI ${a[s]>>6} / VN ${(a[s]>>3)&7} / Mode ${a[s]&7}`;if(['Stratum','Poll','Precision'].includes(n))return String(a[s]);return `${len} B`;}
+    if(g==='DHCP'){if(['Op','Hardware Type','HLEN','Hops'].includes(n))return String(a[s]);if(n==='Transaction ID')return hexN(u32(a,s),8);return `${len} B`;}
+    if(f.groupId==='data'||n==='Data')return `${len} B`;
+    if(f.groupId==='app')return `${len} B`;
+  }catch(_){ }
+  return hx();
+}
+function hexN(v,n){return '0x'+Number(v>>>0).toString(16).padStart(n,'0');}
+function splitDecodeLines(a,p,fields,maxWidth,origin,fontSize=17,asciiLimit=256){
+  const lines=[];
+  const groups=[];
+  for(const f of fields){let g=groups.at(-1);if(!g||g.id!==f.groupId||g.name!==f.groupName){g={id:f.groupId,name:f.groupName,layer:f.layer,fields:[]};groups.push(g);}g.fields.push(f);}
+  for(const g of groups){
+    let line={group:g,parts:[],width:0,start:g.fields[0].start,end:g.fields[0].end};
+    const proto={text:g.name,color:protocolNameColor(g.layer),bold:true,proto:true};
+    const pw=width(proto.text+'  ',fontSize,'sans');line.parts.push({...proto,width:pw});line.width=pw;
+    for(const f of g.fields){
+      const value=decodeField(a,f),label=`${f.name}: ${value}`;
+      const tw=width(label,fontSize,'sans'),sep=line.parts.length?'   ·   ':'' ,sw=sep?width(sep,fontSize,'sans'):0;
+      if(line.width+sw+tw>maxWidth&&line.parts.length>(line.parts[0]?.proto?1:0)){
+        lines.push(line);line={group:g,parts:[],width:0,start:f.start,end:f.end};
+      }
+      if(line.parts.length){const ss='   ·   ';const ww=width(ss,fontSize,'sans');line.parts.push({text:ss,color:'#9AA5B5',width:ww});line.width+=ww;}
+      line.parts.push({text:label,color:f.color,width:tw,field:f});line.width+=tw;line.end=f.end;
+    }
+    if(line.parts.length)lines.push(line);
+    if(g.id==='data'||g.id==='app'){
+      const result=asciiPreview(a,g.fields[0].start,g.fields.at(-1).end,asciiLimit);
+      for(let i=0;i<result.lines.length;i++){
+        const s=(i===0?'ASCII: ':'')+result.lines[i],w=width(s,fontSize,'mono');
+        lines.push({group:g,parts:[{text:s,color:g.fields[0].color,width:w,mono:true}],width:w,start:g.fields[0].start,end:g.fields.at(-1).end,ascii:true});
+      }
+    }
+  }
+  return lines;
+}
+// v8 renderer ---------------------------------------------------------------
+// Design rule:
+//   - Segment names and decoded values are content-flow layouts.
+//   - HEX is a completely independent, fixed byte grid.
+//   - Field colors come from the exact same field model in all three sections.
+// Therefore text width can never move a HEX byte or alter a HEX line break.
+
+function fixedPacketRows(n, cols){
+  const rows=[];
+  for(let s=0;s<n;s+=cols)rows.push({start:s,end:Math.min(n,s+cols)});
+  return rows;
+}
+
+function fixedByteGeom(rows, cell=36, origin=52){
+  return {
+    rows,cell,origin,
+    rowRight:r=>origin+(r.end-r.start)*cell,
+    xFor:(row,byte)=>origin+(byte-row.start)*cell,
+    centerFor:(row,byte)=>origin+(byte-row.start+.5)*cell
+  };
+}
+
+function groupFields(fields){
+  const groups=[];
+  for(const f of fields){
+    let g=groups.at(-1);
+    if(!g||g.id!==f.groupId||g.name!==f.groupName){
+      g={id:f.groupId,name:f.groupName,layer:f.layer,fields:[]};groups.push(g);
+    }
+    g.fields.push(f);
+  }
+  return groups;
+}
+
+function splitNameLines(p,fields,maxWidth,origin,fontSize=16){
+  const lines=[];
+  for(const g of groupFields(fields)){
+    let line={group:g,parts:[],width:0,start:g.fields[0].start,end:g.fields[0].end};
+    const protoText=g.name;
+    const pw=width(protoText,fontSize,'sans');
+    line.parts.push({text:protoText,color:protocolNameColor(g.layer),width:pw,bold:true,proto:true});
+    line.width=pw;
+    let fieldCount=0;
+    for(const f of g.fields){
+      // The protocol name already tells the reader that a lone Data field is Data.
+      // Keep it once, not as "Data · Data".
+      if(g.id==='data' && f.name==='Data')continue;
+      const label=f.name;
+      const tw=width(label,fontSize,'sans');
+      const sep='   ·   ',sw=width(sep,fontSize,'sans');
+      if(fieldCount>0 && line.width+sw+tw>maxWidth){
+        lines.push(line);
+        line={group:g,parts:[],width:0,start:f.start,end:f.end};
+        fieldCount=0;
+      }
+      if(line.parts.length){
+        const useSep='   ·   ',ww=width(useSep,fontSize,'sans');
+        line.parts.push({text:useSep,color:'#9AA5B5',width:ww,bold:false});line.width+=ww;
+      }
+      line.parts.push({text:label,color:f.color,width:tw,field:f});line.width+=tw;
+      line.end=f.end;fieldCount++;
+    }
+    // Data has no child field names after the de-duplication above. Keep its protocol label.
+    if(line.parts.length)lines.push(line);
+  }
+  return lines;
+}
+
+function contentIntervalsForLayer(lines,layer,origin){
+  const ints=[];
+  for(let i=0;i<lines.length;i++){
+    const ln=lines[i];
+    if(ln.start>=layer.start&&ln.end<=layer.end){
+      ints.push({row:i,left:origin,right:origin+ln.width+12});
+    }
+  }
+  return ints;
+}
+
+function ribbonWithGutters(intervals,boxTops,boxHeights,depth,maxDepth){
+  if(!intervals.length)return '';
+  // Separate rows physically. All horizontal changes in the outline happen
+  // inside the gutter, never through a text row.
+  const sideBase=12+maxDepth*3.2;
+  const sideInset=depth*3.2;
+  const vInset=depth*1.6;
+  const b=intervals.map(v=>({
+    row:v.row,
+    left:v.left-sideBase+sideInset,
+    right:v.right+sideBase-sideInset,
+    top:boxTops[v.row]+vInset,
+    bottom:boxTops[v.row]+boxHeights[v.row]-vInset
+  }));
+  for(let i=1;i<b.length;i++)if(b[i].row!==b[i-1].row+1)return '';
+  const pts=[];
+  const first=b[0],last=b.at(-1);
+  pts.push([first.left,first.top],[first.right,first.top]);
+  // right edge, top -> bottom
+  for(let i=0;i<b.length;i++){
+    const cur=b[i];
+    pts.push([cur.right,cur.bottom]);
+    if(i<b.length-1){
+      const next=b[i+1];
+      const gapTop=cur.bottom,gapBottom=next.top;
+      const mid=(gapTop+gapBottom)/2 + (depth-maxDepth/2)*0.9;
+      pts.push([cur.right,mid],[next.right,mid],[next.right,next.top]);
+    }
+  }
+  pts.push([last.left,last.bottom]);
+  // left edge, bottom -> top
+  for(let i=b.length-1;i>=0;i--){
+    const cur=b[i];
+    pts.push([cur.left,cur.top]);
+    if(i>0){
+      const prev=b[i-1];
+      const gapTop=prev.bottom,gapBottom=cur.top;
+      const mid=(gapTop+gapBottom)/2 - (depth-maxDepth/2)*0.9;
+      pts.push([cur.left,mid],[prev.left,mid],[prev.left,prev.bottom]);
+    }
+  }
+  return roundedPath(pts,Math.max(3.5,7-depth*.55));
+}
+
+function contentIntervalsForLayerV9(lines,layer,origin){
+  const ints=[];
+  for(let i=0;i<lines.length;i++){
+    const ln=lines[i];
+    if(ln.start>=layer.start&&ln.end<=layer.end){
+      // line.width is the explicit SVG textLength below. The right edge is
+      // therefore deterministic even if another machine picks a fallback font.
+      ints.push({row:i,left:origin,right:origin+ln.width});
+    }
+  }
+  return ints;
+}
+
+function renderFlowLine(put,line,x,y,size,fam,mon){
+  const spans=line.parts.map(part=>
+    `<tspan fill="${part.color}" font-family="${part.mono?mon:fam}" font-weight="${part.bold===false?500:700}">${escapeXML(part.text)}</tspan>`
+  ).join('');
+  // Force the exported SVG to keep the same measured line width. This avoids
+  // small cumulative shifts from font fallback or shaping differences.
+  put(`<text x="${fmt(x)}" y="${fmt(y)}" font-family="${fam}" font-size="${size}" font-weight="700" textLength="${fmt(Math.max(1,line.width))}" lengthAdjust="spacingAndGlyphs">${spans}</text>`);
+}
+
+function renderSVGv9(a,p,opts={}){
+  const cols=opts.cols||26,asciiLimit=opts.asciiLimit||256;
+  const fields=buildFields(a,p);
+  const rows=fixedPacketRows(a.length,cols);
+  const geom=fixedByteGeom(rows,36,54);
+  const depths=layerDepths(p),maxDepth=Math.max(0,...depths.values());
+  const fullGridRight=Math.max(...rows.map(r=>geom.rowRight(r)));
+  const targetW=Math.max(720,fullGridRight+58);
+  const textMax=Math.max(620,targetW-geom.origin-48);
+
+  // Content-flow sections use a real gutter between rows. The outline may
+  // change width only in that gutter.
+  const names=splitNameLines(p,fields,textMax,geom.origin,16);
+  const flowBoxH=42,flowStride=56;
+  const nameHeights=names.map(()=>flowBoxH),nameTops=[];
+  let y=40;for(let i=0;i<names.length;i++){nameTops.push(y);y+=flowStride;}const nameBottom=names.length?nameTops.at(-1)+flowBoxH:40;
+
+  // HEX is a strict fixed-pitch byte grid. It has its own independent rows.
+  const hexBoxH=42,hexStride=58,hexHeights=rows.map(()=>hexBoxH),hexTops=[];
+  y=nameBottom+58;for(let i=0;i<rows.length;i++){hexTops.push(y);y+=hexStride;}const hexBottom=rows.length?hexTops.at(-1)+hexBoxH:y;
+
+  const decode=splitDecodeLines(a,p,fields,textMax,geom.origin,17,asciiLimit);
+  const decHeights=decode.map(()=>flowBoxH),decTops=[];
+  y=hexBottom+61;for(let i=0;i<decode.length;i++){decTops.push(y);y+=flowStride;}
+  const decBottom=decode.length?decTops.at(-1)+flowBoxH:y;
+  const H=Math.ceil(decBottom+16),W=Math.ceil(targetW);
+
+  const out=[],put=s=>out.push(s);
+  const fam='system-ui,-apple-system,"Noto Sans JP","Hiragino Kaku Gothic ProN",Meiryo,sans-serif';
+  const mon='"DejaVu Sans Mono",ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace';
+  const text=(x,yy,s,color,size=16,kind='sans',weight=700,anchor='start')=>
+    put(`<text x="${fmt(x)}" y="${fmt(yy)}" fill="${color}" font-family="${kind==='mono'?mon:fam}" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}">${escapeXML(s)}</text>`);
+  const drawRibbon=(l,intervals,tops,heights,zone)=>{
+    const d=ribbonWithGutters(intervals,tops,heights,depths.get(l)||0,maxDepth);if(!d)return;
+    const c=BG[l.bg]||BG.ether;
+    put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="round"/>`);
+  };
+
+  put(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
+
+  // 1) Segment names: content-flow, not byte-grid shaped.
+  text(22,24,'セグメント名','#64748B',15);
+  for(const l of p.layers){
+    const ints=contentIntervalsForLayerV9(names,l,geom.origin);
+    if(ints.length)drawRibbon(l,ints,nameTops,nameHeights,'name');
+  }
+  for(let i=0;i<names.length;i++)renderFlowLine(put,names[i],geom.origin,nameTops[i]+28,16,fam,mon);
+
+  // 2) HEX: exact byte positions. Each row has a 16px+ gutter, so a wrapped
+  // outline can never cross the glyph box.
+  text(22,nameBottom+39,'HEX','#64748B',15);
+  for(const l of p.layers)drawRibbon(l,intervalsForLayer(l,geom),hexTops,hexHeights,'hex');
+  const byteField=new Array(a.length);
+  for(const f of fields)for(let i=f.start;i<f.end;i++)byteField[i]=f;
+  for(let r=0;r<rows.length;r++){
+    const row=rows[r];
+    for(let i=row.start;i<row.end;i++){
+      text(geom.centerFor(row,i),hexTops[r]+28,hex2(a[i]),byteField[i]?.color||'#42526E',17,'mono',700,'middle');
+    }
+  }
+
+  // 3) Decoded values: exactly the same content-flow geometry as segment names.
+  text(22,hexBottom+42,'デコード結果','#64748B',15);
+  for(const l of p.layers){
+    const ints=contentIntervalsForLayerV9(decode,l,geom.origin);
+    if(ints.length)drawRibbon(l,ints,decTops,decHeights,'decode');
+  }
+  for(let i=0;i<decode.length;i++)renderFlowLine(put,decode[i],geom.origin,decTops[i]+29,17,fam,mon);
+
+  put('</svg>');
+  return out.join('\n');
+}
+
+
+
+// v10 renderer --------------------------------------------------------------
+// Geometry rules:
+//   1. HEX owns a fixed byte grid. Text labels can never change cell positions.
+//   2. Segment names and decoded values are one continuous content flow. A
+//      protocol boundary never forces a line break.
+//   3. The outermost layer is a simple rounded rectangle. Nested layers use
+//      gutter-only connectors, so no horizontal outline can cross glyphs.
+//   4. Every flow token gets an explicit x and textLength. Font fallback cannot
+//      accumulate into layout drift.
+
+function nameFlowTokens(fields){
+  const tokens=[];
+  for(const g of groupFields(fields)){
+    const first=g.fields[0],last=g.fields.at(-1);
+    tokens.push({text:g.name,color:protocolNameColor(g.layer),start:first.start,end:last.end,groupId:g.id,proto:true,bold:true,badgeBg:(BG[g.layer?.bg]||BG.ether)[0],badgeStroke:(BG[g.layer?.bg]||BG.ether)[1]});
+    for(const f of g.fields){
+      if(g.id==='data'&&f.name==='Data')continue;
+      tokens.push({text:f.name,color:f.color,start:f.start,end:f.end,groupId:g.id,bold:true,field:f});
+    }
+  }
+  return tokens;
+}
+
+function decodeFlowTokens(a,p,fields,asciiLimit){
+  const tokens=[];
+  for(const g of groupFields(fields)){
+    const first=g.fields[0],last=g.fields.at(-1);
+    tokens.push({text:g.name,color:protocolNameColor(g.layer),start:first.start,end:last.end,groupId:g.id,proto:true,bold:true,badgeBg:(BG[g.layer?.bg]||BG.ether)[0],badgeStroke:(BG[g.layer?.bg]||BG.ether)[1]});
+    for(const f of g.fields){
+      tokens.push({text:`${f.name}: ${decodeField(a,f)}`,color:f.color,start:f.start,end:f.end,groupId:g.id,bold:true,field:f});
+    }
+    if(g.id==='data'||g.id==='app'){
+      const preview=asciiPreview(a,first.start,last.end,asciiLimit);
+      preview.lines.forEach((s,i)=>tokens.push({text:(i===0?'ASCII: ':'')+s,color:first.color,start:first.start,end:last.end,groupId:g.id,bold:true,mono:true}));
+      if(preview.omitted>0)tokens.push({text:`… ${preview.omitted} B省略`,color:first.color,start:first.start,end:last.end,groupId:g.id,bold:true});
+    }
+  }
+  return tokens;
+}
+
+function layoutFlowTokens(tokens,maxWidth,origin,fontSize){
+  const gapText='   ·   ';
+  const gapW=width(gapText,fontSize,'sans');
+  const badgePadX=7;
+  const tokenTextW=t=>width(t.text,fontSize,t.mono?'mono':'sans');
+  const tokenW=t=>tokenTextW(t)+(t.proto?badgePadX*2:0);
+  const lines=[];
+  let items=[],cursor=origin;
+  const commit=()=>{
+    if(!items.length)return;
+    lines.push({items,width:cursor-origin});items=[];cursor=origin;
+  };
+  for(let i=0;i<tokens.length;i++){
+    const t=tokens[i],textW=tokenTextW(t),w=tokenW(t);
+    let sepW=items.length?gapW:0;
+    const continuesSameGroup=i+1<tokens.length&&tokens[i+1].groupId===t.groupId;
+    let need=sepW+w+(continuesSameGroup?gapW:0);
+    // Keep a protocol badge with at least its first field whenever possible.
+    if(t.proto&&continuesSameGroup){
+      need+=tokenW(tokens[i+1]);
+    }
+    if(items.length&&cursor-origin+need>maxWidth){
+      const prevToken=[...items].reverse().find(it=>it.kind==='token');
+      // When a line wraps inside the same protocol, keep the same visible
+      // separator at the end of the previous line. Space for it is reserved
+      // while laying out the preceding token, so it never collides with text.
+      if(prevToken&&prevToken.groupId===t.groupId){
+        items.push({kind:'sep',text:gapText,color:'#9AA5B5',x1:cursor,x2:cursor+gapW,width:gapW,bold:false});
+        cursor+=gapW;
+      }
+      commit();sepW=0;
+    }
+    if(items.length){
+      const prevToken=[...items].reverse().find(it=>it.kind==='token');
+      const protocolBoundary=prevToken && prevToken.groupId!==t.groupId;
+      items.push({kind:'sep',text:protocolBoundary?'':gapText,color:'#9AA5B5',x1:cursor,x2:cursor+gapW,width:gapW,bold:false});
+      cursor+=gapW;
+    }
+    const item={...t,kind:'token',x1:cursor,x2:cursor+w,width:w,textWidth:textW,badgePadX:t.proto?badgePadX:0};
+    items.push(item);cursor+=w;
+  }
+  commit();
+  return lines;
+}
+
+function flowIntervalsForLayer(lines,layer){
+  const out=[];
+  for(let r=0;r<lines.length;r++){
+    const relevant=lines[r].items.filter(it=>it.kind==='token'&&it.start>=layer.start&&it.start<layer.end);
+    if(!relevant.length)continue;
+    out.push({row:r,left:Math.min(...relevant.map(x=>x.x1)),right:Math.max(...relevant.map(x=>x.x2))});
+  }
+  return out;
+}
+
+function safeRibbonPath(intervals,tops,heights,depth,maxDepth){
+  if(!intervals.length)return '';
+  const padX=9, padY=5;
+  const sideInset=depth*2.35, vInset=depth*1.65;
+  const boxes=intervals.map(v=>({
+    row:v.row,
+    left:v.left-padX+sideInset,
+    right:v.right+padX-sideInset,
+    top:tops[v.row]-padY+vInset,
+    bottom:tops[v.row]+heights[v.row]+padY-vInset
+  }));
+  for(let i=1;i<boxes.length;i++)if(boxes[i].row!==boxes[i-1].row+1)return '';
+  const pts=[];
+  const first=boxes[0],last=boxes.at(-1);
+  pts.push([first.left,first.top],[first.right,first.top]);
+  for(let i=0;i<boxes.length;i++){
+    const cur=boxes[i];
+    pts.push([cur.right,cur.bottom]);
+    if(i<boxes.length-1){
+      const next=boxes[i+1];
+      const mid=(cur.bottom+next.top)/2-depth*0.75;
+      pts.push([cur.right,mid],[next.right,mid],[next.right,next.top]);
+    }
+  }
+  pts.push([last.left,last.bottom]);
+  for(let i=boxes.length-1;i>=0;i--){
+    const cur=boxes[i];
+    pts.push([cur.left,cur.top]);
+    if(i>0){
+      const prev=boxes[i-1];
+      const mid=(prev.bottom+cur.top)/2+depth*0.75;
+      pts.push([cur.left,mid],[prev.left,mid],[prev.left,prev.bottom]);
+    }
+  }
+  return roundedPath(pts,Math.max(3.8,8-depth*.65));
+}
+
+function renderFlowToken(put,item,y,size,fam,mon){
+  const familyName=item.mono?mon:fam;
+  const weight=item.bold===false?500:700;
+  const pad=item.badgePadX||0;
+  const textW=item.textWidth??Math.max(1,item.width-pad*2);
+  if(item.proto){
+    const h=size+10;
+    const top=y-size-4;
+    put(`<rect x="${fmt(item.x1)}" y="${fmt(top)}" width="${fmt(item.width)}" height="${fmt(h)}" rx="6" fill="${item.badgeBg||'#F7F8FA'}" stroke="${item.badgeStroke||'#A2ADBC'}" stroke-width="1.5"/>`);
+  }
+  put(`<text x="${fmt(item.x1+pad)}" y="${fmt(y)}" fill="${item.color}" font-family="${familyName}" font-size="${size}" font-weight="${weight}" textLength="${fmt(Math.max(1,textW))}" lengthAdjust="spacingAndGlyphs">${escapeXML(item.text)}</text>`);
+}
+
+function renderSVGv10(a,p,opts={}){
+  const cols=opts.cols||26,asciiLimit=opts.asciiLimit||256;
+  const fields=buildFields(a,p);
+  const rows=fixedPacketRows(a.length,cols);
+  // Wider fixed pitch deliberately leaves a real safety margin around each byte.
+  const geom=fixedByteGeom(rows,40,54);
+  const depths=layerDepths(p),maxDepth=Math.max(0,...depths.values());
+  const layers=[...p.layers].sort((a,b)=>(depths.get(a)||0)-(depths.get(b)||0));
+  const fullGridRight=Math.max(...rows.map(r=>geom.rowRight(r)));
+  const targetW=Math.max(760,fullGridRight+60);
+  const textMax=Math.max(660,targetW-geom.origin-52);
+
+  const names=layoutFlowTokens(nameFlowTokens(fields),textMax,geom.origin,16);
+  const flowBoxH=34,flowStride=52;
+  const nameTops=[];let y=42;
+  for(let i=0;i<names.length;i++){nameTops.push(y);y+=flowStride;}
+  const nameBottom=names.length?nameTops.at(-1)+flowBoxH:42;
+
+  const hexBoxH=38,hexStride=60,hexTops=[];
+  y=nameBottom+58;
+  for(let i=0;i<rows.length;i++){hexTops.push(y);y+=hexStride;}
+  const hexBottom=rows.length?hexTops.at(-1)+hexBoxH:y;
+
+  const decode=layoutFlowTokens(decodeFlowTokens(a,p,fields,asciiLimit),textMax,geom.origin,17);
+  const decTops=[];
+  y=hexBottom+61;
+  for(let i=0;i<decode.length;i++){decTops.push(y);y+=flowStride;}
+  const decBottom=decode.length?decTops.at(-1)+flowBoxH:y;
+  const W=Math.ceil(targetW),H=Math.ceil(decBottom+18);
+
+  const out=[],put=s=>out.push(s);
+  const fam='system-ui,-apple-system,Noto Sans JP,Hiragino Kaku Gothic ProN,Meiryo,sans-serif';
+  const mon='DejaVu Sans Mono,ui-monospace,SFMono-Regular,Consolas,Liberation Mono,monospace';
+  const text=(x,yy,s,color,size=16,kind='sans',weight=700,anchor='start')=>put(`<text x="${fmt(x)}" y="${fmt(yy)}" fill="${color}" font-family="${kind==='mono'?mon:fam}" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}">${escapeXML(s)}</text>`);
+
+  function drawLayerSet(zone,linesOrRows,tops,heights,intervalFn){
+    for(const l of layers){
+      const depth=depths.get(l)||0,c=BG[l.bg]||BG.ether;
+      const ints=intervalFn(l);
+      if(!ints.length)continue;
+      // The full-packet outer envelope is intentionally a simple rectangle.
+      // It cannot self-intersect or acquire a twisted step at a line wrap.
+      if(depth===0&&l.start===0&&l.end>=a.length){
+        const right=zone==='hex'
+          ? Math.max(...rows.map(r=>geom.rowRight(r)))
+          : Math.max(...linesOrRows.map(line=>geom.origin+line.width));
+        const top=tops[0]-7,bottom=tops.at(-1)+heights.at(-1)+7;
+        put(`<rect data-zone="${zone}" data-layer="${escapeXML(l.id)}" x="${fmt(geom.origin-11)}" y="${fmt(top)}" width="${fmt(right-geom.origin+22)}" height="${fmt(bottom-top)}" rx="9" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8"/>`);
+        continue;
+      }
+      const d=safeRibbonPath(ints,tops,heights,depth,maxDepth);
+      if(d)put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="round"/>`);
+    }
+  }
+
+  put(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
+
+  // 1) Segment names: one continuous flow across protocol boundaries.
+  text(22,25,'セグメント名','#64748B',15);
+  drawLayerSet('name',names,nameTops,names.map(()=>flowBoxH),l=>flowIntervalsForLayer(names,l));
+  for(let r=0;r<names.length;r++)for(const item of names[r].items)renderFlowToken(put,item,nameTops[r]+24,16,fam,mon);
+
+  // 2) HEX: byte positions depend only on byte index and fixed cell pitch.
+  text(22,nameBottom+40,'HEX','#64748B',15);
+  drawLayerSet('hex',rows,hexTops,rows.map(()=>hexBoxH),l=>intervalsForLayer(l,geom));
+  const byteField=new Array(a.length);
+  for(const f of fields)for(let i=f.start;i<f.end;i++)byteField[i]=f;
+  for(let r=0;r<rows.length;r++){
+    const row=rows[r];
+    for(let i=row.start;i<row.end;i++){
+      const xx=geom.centerFor(row,i);
+      text(xx,hexTops[r]+25,hex2(a[i]),byteField[i]?.color||'#42526E',17,'mono',700,'middle');
+    }
+  }
+
+  // 3) Decoded values: same flow engine and baseline rules as segment names.
+  text(22,hexBottom+43,'デコード結果','#64748B',15);
+  drawLayerSet('decode',decode,decTops,decode.map(()=>flowBoxH),l=>flowIntervalsForLayer(decode,l));
+  for(let r=0;r<decode.length;r++)for(const item of decode[r].items)renderFlowToken(put,item,decTops[r]+25,17,fam,mon);
+
+  put('</svg>');
+  return out.join('\n');
+}
+
+
+
+// v11 renderer --------------------------------------------------------------
+// Simplified nesting geometry:
+//   <A <B <C <D >>>>
+// A nested layer changes geometry only where it starts. From that point on,
+// it fills to the common right/bottom edge of the section. Therefore closing
+// edges never accumulate tiny per-row offsets and can never twist.
+
+function firstFlowHit(lines,layer){
+  for(let r=0;r<lines.length;r++){
+    const hits=lines[r].items.filter(it=>it.kind==='token'&&it.start>=layer.start&&it.start<layer.end);
+    if(hits.length)return {row:r,x:Math.min(...hits.map(it=>it.x1))};
+  }
+  return null;
+}
+
+function firstHexHit(layer,geom){
+  for(let r=0;r<geom.rows.length;r++){
+    const row=geom.rows[r];
+    if(layer.start<row.end&&layer.end>row.start){
+      const start=Math.max(layer.start,row.start);
+      return {row:r,x:geom.xFor(row,start)};
+    }
+  }
+  return null;
+}
+
+function startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,radius=8,leadPad=16){
+  if(!hit)return '';
+  const row=hit.row;
+  const top=tops[row]-6;
+  const startX=Math.max(zoneLeft, hit.x-leadPad);
+  // If the layer starts at the visual line head after padding, use the same
+  // breathing room as a normal rectangle.
+  if(startX<=zoneLeft+1){
+    return roundedPath([[zoneLeft,top],[zoneRight,top],[zoneRight,zoneBottom],[zoneLeft,zoneBottom]],radius);
+  }
+  // A layer occupies only the tail of its first row. After the following gutter
+  // it spans the whole section width. This is the only step in the shape.
+  if(row<tops.length-1){
+    const rowBottom=tops[row]+heights[row]+6;
+    const nextTop=tops[row+1]-6;
+    const seam=(rowBottom+nextTop)/2;
+    return roundedPath([
+      [startX,top],
+      [zoneRight,top],
+      [zoneRight,zoneBottom],
+      [zoneLeft,zoneBottom],
+      [zoneLeft,seam],
+      [startX,seam]
+    ],radius);
+  }
+  // Started on the final row: no wrap exists, so a simple tail rectangle is enough.
+  return roundedPath([[startX,top],[zoneRight,top],[zoneRight,zoneBottom],[startX,zoneBottom]],radius);
+}
+
+function renderSVGv16(a,p,opts={}){
+  const cols=opts.cols||26,asciiLimit=opts.asciiLimit||256;
+  const fields=buildFields(a,p);
+  const rows=fixedPacketRows(a.length,cols);
+  const geom=fixedByteGeom(rows,40,54);
+  const depths=layerDepths(p);
+  const layers=[...p.layers].sort((a,b)=>(depths.get(a)||0)-(depths.get(b)||0));
+  const fullGridRight=Math.max(...rows.map(r=>geom.rowRight(r)));
+  const targetW=Math.max(760,fullGridRight+60);
+  const textMax=Math.max(660,targetW-geom.origin-52);
+
+  const names=layoutFlowTokens(nameFlowTokens(fields),textMax,geom.origin,16);
+  const flowBoxH=34,flowStride=52;
+  const nameTops=[];let y=42;
+  for(let i=0;i<names.length;i++){nameTops.push(y);y+=flowStride;}
+  const nameBottom=names.length?nameTops.at(-1)+flowBoxH:42;
+
+  const hexBoxH=38,hexStride=60,hexTops=[];
+  y=nameBottom+58;
+  for(let i=0;i<rows.length;i++){hexTops.push(y);y+=hexStride;}
+  const hexBottom=rows.length?hexTops.at(-1)+hexBoxH:y;
+
+  const decode=layoutFlowTokens(decodeFlowTokens(a,p,fields,asciiLimit),textMax,geom.origin,17);
+  const decTops=[];
+  y=hexBottom+61;
+  for(let i=0;i<decode.length;i++){decTops.push(y);y+=flowStride;}
+  const decBottom=decode.length?decTops.at(-1)+flowBoxH:y;
+  const W=Math.ceil(targetW),H=Math.ceil(decBottom+18);
+
+  const out=[],put=s=>out.push(s);
+  const fam='system-ui,-apple-system,Noto Sans JP,Hiragino Kaku Gothic ProN,Meiryo,sans-serif';
+  const mon='DejaVu Sans Mono,ui-monospace,SFMono-Regular,Consolas,Liberation Mono,monospace';
+  const text=(x,yy,s,color,size=16,kind='sans',weight=700,anchor='start')=>put(`<text x="${fmt(x)}" y="${fmt(yy)}" fill="${color}" font-family="${kind==='mono'?mon:fam}" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}">${escapeXML(s)}</text>`);
+
+  function drawSimpleLayers(zone,linesOrRows,tops,heights,hitFn){
+    const zoneLeft=geom.origin-11;
+    const zoneRight=zone==='hex'
+      ? Math.max(...rows.map(r=>geom.rowRight(r)))+11
+      : Math.max(...linesOrRows.map(line=>geom.origin+line.width))+11;
+    const zoneBottom=tops.at(-1)+heights.at(-1)+7;
+    for(const l of layers){
+      const c=BG[l.bg]||BG.ether;
+      const hit=hitFn(l);
+      if(!hit)continue;
+      const depth=depths.get(l)||0;
+      let d;
+      if(depth===0&&l.start===0){
+        const top=tops[0]-7;
+        d=roundedPath([[zoneLeft,top],[zoneRight,top],[zoneRight,zoneBottom],[zoneLeft,zoneBottom]],9);
+      }else{
+        d=startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,Math.max(5,8-depth*.5),zone==='hex'?0:16);
+      }
+      if(d)put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="round"/>`);
+    }
+  }
+
+  put(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
+
+  text(22,25,'セグメント名','#64748B',15);
+  drawSimpleLayers('name',names,nameTops,names.map(()=>flowBoxH),l=>firstFlowHit(names,l));
+  for(let r=0;r<names.length;r++)for(const item of names[r].items)renderFlowToken(put,item,nameTops[r]+24,16,fam,mon);
+
+  text(22,nameBottom+40,'HEX','#64748B',15);
+  drawSimpleLayers('hex',rows,hexTops,rows.map(()=>hexBoxH),l=>firstHexHit(l,geom));
+  const byteField=new Array(a.length);
+  for(const f of fields)for(let i=f.start;i<f.end;i++)byteField[i]=f;
+  for(let r=0;r<rows.length;r++){
+    const row=rows[r];
+    for(let i=row.start;i<row.end;i++){
+      text(geom.centerFor(row,i),hexTops[r]+25,hex2(a[i]),byteField[i]?.color||'#42526E',17,'mono',700,'middle');
+    }
+  }
+
+  text(22,hexBottom+43,'デコード結果','#64748B',15);
+  drawSimpleLayers('decode',decode,decTops,decode.map(()=>flowBoxH),l=>firstFlowHit(decode,l));
+  for(let r=0;r<decode.length;r++)for(const item of decode[r].items)renderFlowToken(put,item,decTops[r]+25,17,fam,mon);
+
+  put('</svg>');
+  return out.join('\n');
+}
+
+function renderSVGv16(a,p,opts={}){
+  const cols=opts.cols||26,asciiLimit=opts.asciiLimit||256;
+  const showNames=opts.showNames!==false,showHex=opts.showHex!==false,showDecode=opts.showDecode!==false;
+  if(!showNames&&!showHex&&!showDecode)throw Error('表示する項目を1つ以上選択してください。');
+
+  const fields=buildFields(a,p);
+  const rows=fixedPacketRows(a.length,cols);
+  const geom=fixedByteGeom(rows,40,54);
+  const depths=layerDepths(p);
+  const layers=[...p.layers].sort((a,b)=>(depths.get(a)||0)-(depths.get(b)||0));
+  const fullGridRight=Math.max(...rows.map(r=>geom.rowRight(r)));
+  const targetW=Math.max(760,fullGridRight+60);
+  const textMax=Math.max(660,targetW-geom.origin-52);
+  const flowBoxH=34,flowStride=52,hexBoxH=38,hexStride=60,sectionGap=58;
+
+  const names=showNames?layoutFlowTokens(nameFlowTokens(fields),textMax,geom.origin,16):[];
+  const decode=showDecode?layoutFlowTokens(decodeFlowTokens(a,p,fields,asciiLimit),textMax,geom.origin,17):[];
+
+  let y=22;
+  const nameTops=[];
+  if(showNames){
+    y+=20;
+    for(let i=0;i<names.length;i++){nameTops.push(y);y+=flowStride;}
+    y=(nameTops.length?nameTops.at(-1)+flowBoxH:y)+sectionGap;
+  }
+  const hexTops=[];
+  if(showHex){
+    y+=20;
+    for(let i=0;i<rows.length;i++){hexTops.push(y);y+=hexStride;}
+    y=(hexTops.length?hexTops.at(-1)+hexBoxH:y)+sectionGap;
+  }
+  const decTops=[];
+  if(showDecode){
+    y+=20;
+    for(let i=0;i<decode.length;i++){decTops.push(y);y+=flowStride;}
+    y=(decTops.length?decTops.at(-1)+flowBoxH:y)+16;
+  }
+
+  const W=Math.ceil(targetW),H=Math.ceil(Math.max(80,y));
+  const out=[],put=s=>out.push(s);
+  const fam='system-ui,-apple-system,Noto Sans JP,Hiragino Kaku Gothic ProN,Meiryo,sans-serif';
+  const mon='DejaVu Sans Mono,ui-monospace,SFMono-Regular,Consolas,Liberation Mono,monospace';
+  const text=(x,yy,s,color,size=16,kind='sans',weight=700,anchor='start')=>put(`<text x="${fmt(x)}" y="${fmt(yy)}" fill="${color}" font-family="${kind==='mono'?mon:fam}" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}">${escapeXML(s)}</text>`);
+
+  function drawSimpleLayers(zone,linesOrRows,tops,heights,hitFn){
+    if(!tops.length)return;
+    const zoneLeft=geom.origin-11;
+    const zoneRight=zone==='hex'
+      ? Math.max(...rows.map(r=>geom.rowRight(r)))+11
+      : Math.max(...linesOrRows.map(line=>geom.origin+line.width))+11;
+    const zoneBottom=tops.at(-1)+heights.at(-1)+7;
+    for(const l of layers){
+      const c=BG[l.bg]||BG.ether;
+      const hit=hitFn(l); if(!hit)continue;
+      const depth=depths.get(l)||0;
+      let d;
+      if(depth===0&&l.start===0){
+        const top=tops[0]-7;
+        d=roundedPath([[zoneLeft,top],[zoneRight,top],[zoneRight,zoneBottom],[zoneLeft,zoneBottom]],9);
+      }else{
+        // Keep HEX on the exact byte-cell boundary. Flow sections retain the
+        // left breathing room introduced in v12/v13.
+        d=startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,Math.max(5,8-depth*.5),zone==='hex'?0:16);
+      }
+      if(d)put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="round"/>`);
+    }
+  }
+
+  put(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
+
+  if(showNames){
+    text(22,nameTops[0]-17,'セグメント名','#64748B',15);
+    drawSimpleLayers('name',names,nameTops,names.map(()=>flowBoxH),l=>firstFlowHit(names,l));
+    for(let r=0;r<names.length;r++)for(const item of names[r].items)renderFlowToken(put,item,nameTops[r]+24,16,fam,mon);
+  }
+
+  if(showHex){
+    text(22,hexTops[0]-17,'HEX','#64748B',15);
+    drawSimpleLayers('hex',rows,hexTops,rows.map(()=>hexBoxH),l=>firstHexHit(l,geom));
+    const byteField=new Array(a.length);
+    for(const f of fields)for(let i=f.start;i<f.end;i++)byteField[i]=f;
+    for(let r=0;r<rows.length;r++){
+      const row=rows[r];
+      for(let i=row.start;i<row.end;i++)text(geom.centerFor(row,i),hexTops[r]+25,hex2(a[i]),byteField[i]?.color||'#42526E',17,'mono',700,'middle');
+    }
+  }
+
+  if(showDecode){
+    text(22,decTops[0]-17,'デコード結果','#64748B',15);
+    drawSimpleLayers('decode',decode,decTops,decode.map(()=>flowBoxH),l=>firstFlowHit(decode,l));
+    for(let r=0;r<decode.length;r++)for(const item of decode[r].items)renderFlowToken(put,item,decTops[r]+25,17,fam,mon);
+  }
+
+  put('</svg>');
+  return out.join('\n');
+}
+
+function currentOptions(){
+  return {
+    cols:Number($('cols').value),asciiLimit:Number($('asciilimit').value),
+    showNames:$('showNames').checked,showHex:$('showHex').checked,showDecode:$('showDecode').checked
+  };
+}
+
+function update(){
+  try{
+    const a=parseHex($('hex').value),opts=currentOptions();
+    if(!Number.isInteger(opts.cols)||opts.cols<8||opts.cols>36)throw Error('1行: 8〜36');
+    if(!Number.isInteger(opts.asciiLimit)||opts.asciiLimit<16||opts.asciiLimit>8000)throw Error('ASCII上限: 16〜8000');
+    const p=classify(a,{mode:$('mode').value,asciiLimit:opts.asciiLimit});
+    const svg=renderSVGv16(a,p,opts);
+    $('view').innerHTML=svg;
+    sourceSVG='<?xml version="1.0" encoding="UTF-8"?>\n'+svg;
+    $('error').textContent=p.warnings.join(' ');
+    $('saveSvg').disabled=false;$('savePng').disabled=false;
+  }catch(e){
+    $('error').textContent=e.message;sourceSVG='';$('view').innerHTML='';
+    $('saveSvg').disabled=true;$('savePng').disabled=true;
+  }
+}
+
+function downloadBlob(blob,name){
+  const url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),2000);
+}
+function saveSVG(){
+  if(!sourceSVG)return;
+  downloadBlob(new Blob([sourceSVG],{type:'image/svg+xml;charset=utf-8'}),'packet_protocol.svg');
+}
+function savePNG(){
+  if(!sourceSVG)return;
+  const svg=$('view').querySelector('svg'); if(!svg)return;
+  const w=Number(svg.getAttribute('width')),h=Number(svg.getAttribute('height')),scale=2;
+  const blob=new Blob([sourceSVG],{type:'image/svg+xml;charset=utf-8'}),url=URL.createObjectURL(blob),img=new Image();
+  img.onload=()=>{
+    const canvas=document.createElement('canvas');canvas.width=Math.ceil(w*scale);canvas.height=Math.ceil(h*scale);
+    const ctx=canvas.getContext('2d');ctx.scale(scale,scale);ctx.drawImage(img,0,0,w,h);URL.revokeObjectURL(url);
+    canvas.toBlob(png=>{if(png)downloadBlob(png,'packet_protocol.png');},'image/png');
+  };
+  img.onerror=()=>{URL.revokeObjectURL(url);$('error').textContent='PNG変換に失敗しました。';};
+  img.src=url;
+}
+
+$('hex').value=EXAMPLE;
+for(const id of ['hex','cols','asciilimit','showNames','showHex','showDecode'])$(id).addEventListener('input',update);
+$('mode').addEventListener('change',update);
+$('sample').addEventListener('click',()=>{$('hex').value=EXAMPLE;$('cols').value=26;$('mode').value='auto';$('asciilimit').value=256;$('showNames').checked=true;$('showHex').checked=true;$('showDecode').checked=true;update();});
+$('saveSvg').addEventListener('click',saveSVG);
+$('savePng').addEventListener('click',savePNG);
+update();
+window.__packetGenerator={classify,parseHex,renderSVG:renderSVGv16,asciiPreview,buildFields,fixedPacketRows,getCurrent:()=>sourceSVG};
+})();
+
+</script>
+</body>
+</html>
