@@ -43,6 +43,7 @@
       </select></label>
       <label class="field"><span>1行</span><input type="number" id="cols" min="8" max="36" value="26"></label>
       <label class="field"><span>ASCII上限</span><input type="number" id="asciilimit" min="16" max="8000" value="256"></label>
+      <label class="field"><span>HEX上限</span><input type="number" id="hexlimit" min="16" max="8000" value="256"></label>
     </div>
     <div class="checks">
       <label><input type="checkbox" id="showNames" checked>セグメント名</label>
@@ -704,6 +705,31 @@ function fixedByteGeom(rows, cell=36, origin=52){
   };
 }
 
+// Build a display-only HEX stream. A long field keeps its first `limit` bytes
+// and collapses the rest into one fixed-width ellipsis cell. Source byte ranges
+// remain attached to every cell so protocol-outline starts still map correctly.
+function buildHexDisplayCells(a,fields,limit){
+  const cells=[];
+  const cap=Math.max(1,Number(limit)||256);
+  for(const f of fields){
+    const len=f.end-f.start;
+    const shown=Math.min(len,cap);
+    for(let i=0;i<shown;i++)cells.push({kind:'byte',srcStart:f.start+i,srcEnd:f.start+i+1,color:f.color,field:f});
+    if(shown<len)cells.push({kind:'omit',srcStart:f.start+shown,srcEnd:f.end,color:f.color,field:f,omitted:len-shown});
+  }
+  return cells;
+}
+function firstHexDisplayHit(layer,geom,cells){
+  for(let r=0;r<geom.rows.length;r++){
+    const row=geom.rows[r];
+    for(let k=row.start;k<row.end;k++){
+      const c=cells[k];
+      if(c&&c.srcStart<layer.end&&c.srcEnd>layer.start)return {row:r,x:geom.xFor(row,k)};
+    }
+  }
+  return null;
+}
+
 function groupFields(fields){
   const groups=[];
   for(const f of fields){
@@ -935,7 +961,7 @@ function decodeFlowTokens(a,p,fields,asciiLimit){
     }
     if(g.id==='data'||g.id==='app'){
       const preview=asciiPreview(a,first.start,last.end,asciiLimit);
-      preview.lines.forEach((s,i)=>tokens.push({text:(i===0?'ASCII: ':'')+s,color:first.color,start:first.start,end:last.end,groupId:g.id,bold:true,mono:true}));
+      preview.lines.forEach((s,i)=>tokens.push({text:(i===0?'ASCII: ':'')+s,color:first.color,start:first.start,end:last.end,groupId:g.id,bold:true,mono:true,ascii:true,asciiChunk:i}));
       if(preview.omitted>0)tokens.push({text:`… ${preview.omitted} B省略`,color:first.color,start:first.start,end:last.end,groupId:g.id,bold:true});
     }
   }
@@ -968,7 +994,7 @@ function layoutFlowTokens(tokens,maxWidth,origin,fontSize){
       // When a line wraps inside the same protocol, keep the same visible
       // separator at the end of the previous line. Space for it is reserved
       // while laying out the preceding token, so it never collides with text.
-      if(prevToken&&prevToken.groupId===t.groupId){
+      if(prevToken&&prevToken.groupId===t.groupId&&!(prevToken.ascii&&t.ascii)){
         items.push({kind:'sep',text:gapText,color:'#9AA5B5',x1:cursor,x2:cursor+gapW,width:gapW,bold:false});
         cursor+=gapW;
       }
@@ -977,7 +1003,8 @@ function layoutFlowTokens(tokens,maxWidth,origin,fontSize){
     if(items.length){
       const prevToken=[...items].reverse().find(it=>it.kind==='token');
       const protocolBoundary=prevToken && prevToken.groupId!==t.groupId;
-      items.push({kind:'sep',text:protocolBoundary?'':gapText,color:'#9AA5B5',x1:cursor,x2:cursor+gapW,width:gapW,bold:false});
+      const asciiContinuation=prevToken&&prevToken.ascii&&t.ascii;
+      items.push({kind:'sep',text:(protocolBoundary||asciiContinuation)?'':gapText,color:'#9AA5B5',x1:cursor,x2:cursor+gapW,width:gapW,bold:false});
       cursor+=gapW;
     }
     const item={...t,kind:'token',x1:cursor,x2:cursor+w,width:w,textWidth:textW,badgePadX:t.proto?badgePadX:0};
@@ -1188,94 +1215,14 @@ function startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,radius=8,
   return roundedPath([[startX,top],[zoneRight,top],[zoneRight,zoneBottom],[startX,zoneBottom]],radius);
 }
 
-function renderSVGv16(a,p,opts={}){
-  const cols=opts.cols||26,asciiLimit=opts.asciiLimit||256;
-  const fields=buildFields(a,p);
-  const rows=fixedPacketRows(a.length,cols);
-  const geom=fixedByteGeom(rows,40,54);
-  const depths=layerDepths(p);
-  const layers=[...p.layers].sort((a,b)=>(depths.get(a)||0)-(depths.get(b)||0));
-  const fullGridRight=Math.max(...rows.map(r=>geom.rowRight(r)));
-  const targetW=Math.max(760,fullGridRight+60);
-  const textMax=Math.max(660,targetW-geom.origin-52);
-
-  const names=layoutFlowTokens(nameFlowTokens(fields),textMax,geom.origin,16);
-  const flowBoxH=34,flowStride=52;
-  const nameTops=[];let y=42;
-  for(let i=0;i<names.length;i++){nameTops.push(y);y+=flowStride;}
-  const nameBottom=names.length?nameTops.at(-1)+flowBoxH:42;
-
-  const hexBoxH=38,hexStride=60,hexTops=[];
-  y=nameBottom+58;
-  for(let i=0;i<rows.length;i++){hexTops.push(y);y+=hexStride;}
-  const hexBottom=rows.length?hexTops.at(-1)+hexBoxH:y;
-
-  const decode=layoutFlowTokens(decodeFlowTokens(a,p,fields,asciiLimit),textMax,geom.origin,17);
-  const decTops=[];
-  y=hexBottom+61;
-  for(let i=0;i<decode.length;i++){decTops.push(y);y+=flowStride;}
-  const decBottom=decode.length?decTops.at(-1)+flowBoxH:y;
-  const W=Math.ceil(targetW),H=Math.ceil(decBottom+18);
-
-  const out=[],put=s=>out.push(s);
-  const fam='system-ui,-apple-system,Noto Sans JP,Hiragino Kaku Gothic ProN,Meiryo,sans-serif';
-  const mon='DejaVu Sans Mono,ui-monospace,SFMono-Regular,Consolas,Liberation Mono,monospace';
-  const text=(x,yy,s,color,size=16,kind='sans',weight=700,anchor='start')=>put(`<text x="${fmt(x)}" y="${fmt(yy)}" fill="${color}" font-family="${kind==='mono'?mon:fam}" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}">${escapeXML(s)}</text>`);
-
-  function drawSimpleLayers(zone,linesOrRows,tops,heights,hitFn){
-    const zoneLeft=geom.origin-11;
-    const zoneRight=zone==='hex'
-      ? Math.max(...rows.map(r=>geom.rowRight(r)))+11
-      : Math.max(...linesOrRows.map(line=>geom.origin+line.width))+11;
-    const zoneBottom=tops.at(-1)+heights.at(-1)+7;
-    for(const l of layers){
-      const c=BG[l.bg]||BG.ether;
-      const hit=hitFn(l);
-      if(!hit)continue;
-      const depth=depths.get(l)||0;
-      let d;
-      if(depth===0&&l.start===0){
-        const top=tops[0]-7;
-        d=roundedPath([[zoneLeft,top],[zoneRight,top],[zoneRight,zoneBottom],[zoneLeft,zoneBottom]],9);
-      }else{
-        d=startNotchPath(hit,tops,heights,zoneLeft,zoneRight,zoneBottom,Math.max(5,8-depth*.5),zone==='hex'?0:16);
-      }
-      if(d)put(`<path data-zone="${zone}" data-layer="${escapeXML(l.id)}" d="${d}" fill="${c[0]}" stroke="${c[1]}" stroke-width="1.8" stroke-linejoin="round"/>`);
-    }
-  }
-
-  put(`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">`);
-
-  text(22,25,'セグメント名','#64748B',15);
-  drawSimpleLayers('name',names,nameTops,names.map(()=>flowBoxH),l=>firstFlowHit(names,l));
-  for(let r=0;r<names.length;r++)for(const item of names[r].items)renderFlowToken(put,item,nameTops[r]+24,16,fam,mon);
-
-  text(22,nameBottom+40,'HEX','#64748B',15);
-  drawSimpleLayers('hex',rows,hexTops,rows.map(()=>hexBoxH),l=>firstHexHit(l,geom));
-  const byteField=new Array(a.length);
-  for(const f of fields)for(let i=f.start;i<f.end;i++)byteField[i]=f;
-  for(let r=0;r<rows.length;r++){
-    const row=rows[r];
-    for(let i=row.start;i<row.end;i++){
-      text(geom.centerFor(row,i),hexTops[r]+25,hex2(a[i]),byteField[i]?.color||'#42526E',17,'mono',700,'middle');
-    }
-  }
-
-  text(22,hexBottom+43,'デコード結果','#64748B',15);
-  drawSimpleLayers('decode',decode,decTops,decode.map(()=>flowBoxH),l=>firstFlowHit(decode,l));
-  for(let r=0;r<decode.length;r++)for(const item of decode[r].items)renderFlowToken(put,item,decTops[r]+25,17,fam,mon);
-
-  put('</svg>');
-  return out.join('\n');
-}
-
-function renderSVGv16(a,p,opts={}){
-  const cols=opts.cols||26,asciiLimit=opts.asciiLimit||256;
+function renderSVGv17(a,p,opts={}){
+  const cols=opts.cols||26,asciiLimit=opts.asciiLimit||256,hexLimit=opts.hexLimit||256;
   const showNames=opts.showNames!==false,showHex=opts.showHex!==false,showDecode=opts.showDecode!==false;
   if(!showNames&&!showHex&&!showDecode)throw Error('表示する項目を1つ以上選択してください。');
 
   const fields=buildFields(a,p);
-  const rows=fixedPacketRows(a.length,cols);
+  const hexCells=buildHexDisplayCells(a,fields,hexLimit);
+  const rows=fixedPacketRows(hexCells.length,cols);
   const geom=fixedByteGeom(rows,40,54);
   const depths=layerDepths(p);
   const layers=[...p.layers].sort((a,b)=>(depths.get(a)||0)-(depths.get(b)||0));
@@ -1347,12 +1294,14 @@ function renderSVGv16(a,p,opts={}){
 
   if(showHex){
     text(22,hexTops[0]-17,'HEX','#64748B',15);
-    drawSimpleLayers('hex',rows,hexTops,rows.map(()=>hexBoxH),l=>firstHexHit(l,geom));
-    const byteField=new Array(a.length);
-    for(const f of fields)for(let i=f.start;i<f.end;i++)byteField[i]=f;
+    drawSimpleLayers('hex',rows,hexTops,rows.map(()=>hexBoxH),l=>firstHexDisplayHit(l,geom,hexCells));
     for(let r=0;r<rows.length;r++){
       const row=rows[r];
-      for(let i=row.start;i<row.end;i++)text(geom.centerFor(row,i),hexTops[r]+25,hex2(a[i]),byteField[i]?.color||'#42526E',17,'mono',700,'middle');
+      for(let k=row.start;k<row.end;k++){
+        const c=hexCells[k];
+        const label=c.kind==='omit'?'…':hex2(a[c.srcStart]);
+        text(geom.centerFor(row,k),hexTops[r]+25,label,c.color||'#42526E',17,'mono',700,'middle');
+      }
     }
   }
 
@@ -1368,7 +1317,7 @@ function renderSVGv16(a,p,opts={}){
 
 function currentOptions(){
   return {
-    cols:Number($('cols').value),asciiLimit:Number($('asciilimit').value),
+    cols:Number($('cols').value),asciiLimit:Number($('asciilimit').value),hexLimit:Number($('hexlimit').value),
     showNames:$('showNames').checked,showHex:$('showHex').checked,showDecode:$('showDecode').checked
   };
 }
@@ -1378,8 +1327,9 @@ function update(){
     const a=parseHex($('hex').value),opts=currentOptions();
     if(!Number.isInteger(opts.cols)||opts.cols<8||opts.cols>36)throw Error('1行: 8〜36');
     if(!Number.isInteger(opts.asciiLimit)||opts.asciiLimit<16||opts.asciiLimit>8000)throw Error('ASCII上限: 16〜8000');
+    if(!Number.isInteger(opts.hexLimit)||opts.hexLimit<16||opts.hexLimit>8000)throw Error('HEX上限: 16〜8000');
     const p=classify(a,{mode:$('mode').value,asciiLimit:opts.asciiLimit});
-    const svg=renderSVGv16(a,p,opts);
+    const svg=renderSVGv17(a,p,opts);
     $('view').innerHTML=svg;
     sourceSVG='<?xml version="1.0" encoding="UTF-8"?>\n'+svg;
     $('error').textContent=p.warnings.join(' ');
@@ -1414,13 +1364,13 @@ function savePNG(){
 }
 
 $('hex').value=EXAMPLE;
-for(const id of ['hex','cols','asciilimit','showNames','showHex','showDecode'])$(id).addEventListener('input',update);
+for(const id of ['hex','cols','asciilimit','hexlimit','showNames','showHex','showDecode'])$(id).addEventListener('input',update);
 $('mode').addEventListener('change',update);
-$('sample').addEventListener('click',()=>{$('hex').value=EXAMPLE;$('cols').value=26;$('mode').value='auto';$('asciilimit').value=256;$('showNames').checked=true;$('showHex').checked=true;$('showDecode').checked=true;update();});
+$('sample').addEventListener('click',()=>{$('hex').value=EXAMPLE;$('cols').value=26;$('mode').value='auto';$('asciilimit').value=256;$('hexlimit').value=256;$('showNames').checked=true;$('showHex').checked=true;$('showDecode').checked=true;update();});
 $('saveSvg').addEventListener('click',saveSVG);
 $('savePng').addEventListener('click',savePNG);
 update();
-window.__packetGenerator={classify,parseHex,renderSVG:renderSVGv16,asciiPreview,buildFields,fixedPacketRows,getCurrent:()=>sourceSVG};
+window.__packetGenerator={classify,parseHex,renderSVG:renderSVGv17,asciiPreview,buildFields,fixedPacketRows,getCurrent:()=>sourceSVG};
 })();
 
 </script>
